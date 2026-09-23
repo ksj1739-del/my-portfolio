@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>계산 엔진 테스트</title>
+<style>body{font:14px system-ui;padding:16px}.ok{color:#0a7}.no{color:#d22;font-weight:700}</style></head>
+<body><h1>계산 엔진 테스트 (설계서 §5.4)</h1><ul id="out"></ul><p id="sum"></p>
+<script type="module">
+import { valueHolding, applyBuy, applySell, summarize, guessMarket } from './js/calc.js';
+const out = document.getElementById('out'); let pass = 0, fail = 0;
+const near = (a, b, tol = 0.01) => Math.abs(a - b) <= tol;
+function t(name, cond, detail = '') { const li = document.createElement('li'); li.className = cond ? 'ok' : 'no'; li.textContent = `${cond ? '✔' : '✘'} ${name} ${cond ? '' : detail}`; out.appendChild(li); cond ? pass++ : fail++; }
+
+const fx = 1365.85;
+const kiwoom = { id: 'k', buyFeePct: 0.25, sellFeePct: 0.25, sellTaxPct: 0.2, baseCurrency: 'USD' };
+const meritz = { id: 'm', buyFeePct: 0.015, sellFeePct: 0.015, sellTaxPct: 0.2, baseCurrency: 'KRW' };
+const zero = { buyFeePct: 0, sellFeePct: 0, sellTaxPct: 0 };
+const nvda = { market: 'US', category: 'STOCK', quantity: 40, avgPrice: 134, costCurrency: 'USD' };
+
+let v = valueHolding(nvda, zero, 228.87, fx);
+t('1 NVDA 평가액(수수료0)', near(v.mvKrw, 12504083.58), v.mvKrw);
+t('1 NVDA 원금', near(v.costKrw, 7320956), v.costKrw);
+t('1 NVDA 평가손익', near(v.pnlKrw, 5183127.58) && near(v.pnlUsd, 3794.80), v.pnlKrw);
+t('1 NVDA 수익률 70.80%', near(v.retPct, 70.7985, 0.001), v.retPct);
+v = valueHolding(nvda, { buyFeePct: 0.25, sellFeePct: 0.25 }, 228.87, fx);
+t('2 NVDA 수수료 0.25% 손익', near(v.pnlKrw, 5133564.98) && near(v.pnlUsd, 3758.51), `${v.pnlKrw} ${v.pnlUsd}`);
+t('2 NVDA 수익률 69.95%', near(v.retPct, 69.9466, 0.001), v.retPct);
+v = valueHolding({ market: 'KR', category: 'ETF', quantity: 10, avgPrice: 20000 }, { buyFeePct: 0.25, sellFeePct: 0.25 }, 27665, fx);
+t('3 국내 ETF 손익 75,458.38', near(v.pnlKrw, 75458.38), v.pnlKrw);
+v = valueHolding({ market: 'US', category: 'ETF', quantity: 0.7317703, avgPrice: 325211, costCurrency: 'KRW' }, { buyFeePct: 0.25, sellFeePct: 0.25 }, 307.78, fx);
+t('4 원화 매수 해외ETF 평가액', near(v.mvKrw, 307622.56), v.mvKrw);
+t('4 원화 매수 해외ETF 손익 68,278.80', near(v.pnlKrw, 68278.80) && v.pnlUsd == null, v.pnlKrw);
+const b = applyBuy(nvda, 10, 200);
+t('7 매수 평단 $147.20', b.quantity === 50 && near(b.avgPrice, 147.2), JSON.stringify(b));
+const s = applySell(nvda, { buyFeePct: 0.25, sellFeePct: 0.25 }, 10, 250, 1400);
+t('8 매도 실현 $1,150.40 / ₩1,610,560', near(s.realizedNative, 1150.40) && near(s.realizedKrw, 1610560) && s.quantity === 30 && s.avgPrice === 134, JSON.stringify(s));
+
+// 9·10: 요약본 예시 전체
+const hs = [
+  { id: 1, accountId: 'k', market: 'US', ticker: 'NVDA', category: 'STOCK', quantity: 40, avgPrice: 134, costCurrency: 'USD', p: 228.87 },
+  { id: 2, accountId: 'k', market: 'US', ticker: 'QQQM', category: 'ETF', quantity: 20, avgPrice: 180, costCurrency: 'USD', p: 230 },
+  { id: 3, accountId: 'k', market: 'US', ticker: 'AGG', category: 'ETF', quantity: 46, avgPrice: 98.57, costCurrency: 'USD', p: 96.25 },
+  { id: 4, accountId: 'm', market: 'KR', name: 'KODEX 미국나스닥100', category: 'ETF', quantity: 100, avgPrice: 20000, costCurrency: 'KRW', p: 27665 },
+  { id: 5, accountId: 'm', market: 'KR', name: '삼성전자', category: 'STOCK', quantity: 20, avgPrice: 70000, costCurrency: 'KRW', p: 82000 },
+];
+const cash = [{ accountId: 'k', currency: 'USD', amount: 2665.96 }, { accountId: 'm', currency: 'KRW', amount: 4000000 }];
+const sm = summarize({ accounts: [kiwoom, meritz], holdings: hs, cash, priceOf: (h) => h.p, fx });
+t('9 총자산 36,882,095.92', near(sm.total, 36882095.92), sm.total);
+t('9 종목 원금 21,831,080.39', near(sm.costKrw, 21831080.39), sm.costKrw);
+t('9 평가손익 7,297,099.66 (33.35%)', near(sm.pnlKrw, 7297099.66) && near(sm.ret, 33.35, 0.01), `${sm.pnlKrw} ${sm.ret}`);
+const etf = sm.cats.find((c) => c.id === 'ETF'), st = sm.cats.find((c) => c.id === 'STOCK'), cs = sm.cats.find((c) => c.id === 'CASH');
+t('9 비중 ETF 40.9 / 개별 38.3 / 현금 20.7', near(etf.pct, 40.93, 0.01) && near(st.pct, 38.35, 0.01) && near(cs.pct, 20.72, 0.01), `${etf.pct} ${st.pct} ${cs.pct}`);
+t('9 분류 안 비중 QQQM 41.6% NVDA 88.4%', near(etf.items[0].inCat, 41.62, 0.01) && etf.items[0].h.ticker === 'QQQM' && near(st.items[0].inCat, 88.40, 0.01), `${etf.items[0].inCat} ${st.items[0].inCat}`);
+const ka = sm.byAccount.find((a) => a.acc.id === 'k'), ma = sm.byAccount.find((a) => a.acc.id === 'm');
+t('10 키움 $20,848.26 / 손익 $4,608.89 (34.07%)', near(ka.totalBase, 20848.26) && near(ka.pnlUsd, 4608.89) && near(ka.ret, 34.07, 0.01), `${ka.totalBase} ${ka.pnlUsd} ${ka.ret}`);
+t('10 메리츠 8,406,500원 (+29.5%)', near(ma.totalBase, 8406500) && near(ma.ret, 29.5, 0.05), `${ma.totalBase} ${ma.ret}`);
+t('통화 비중 USD 77.2%', near(sm.byCurrency[1].pct, 77.21, 0.01), sm.byCurrency[1].pct);
+// 경계
+const sm0 = summarize({ accounts: [], holdings: [], cash: [], priceOf: () => null, fx });
+t('빈 데이터 수익률 null, NaN 없음', sm0.ret === null && sm0.total === 0, JSON.stringify(sm0.ret));
+const smfx = summarize({ accounts: [kiwoom], holdings: [hs[0]], cash: [], priceOf: (h) => h.p, fx: null });
+t('환율 없음 → fxMissing', smfx.fxMissing === true && smfx.total === 0);
+t('시장 판별', guessMarket('005930') === 'KR' && guessMarket('0091C0') === 'KR' && guessMarket('삼성전자') === 'KR' && guessMarket('NVDA') === 'US' && guessMarket('BRK-B') === 'US');
+document.getElementById('sum').innerHTML = `<b class="${fail ? 'no' : 'ok'}">통과 ${pass} / 실패 ${fail}</b>`;
+document.title = fail ? `FAIL ${fail}` : `PASS ${pass}`;
+</script></body></html>
