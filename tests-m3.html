@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>M3·M2 화면 규칙 테스트</title>
+<style>body{font:14px system-ui;padding:16px}.ok{color:#0a7}.no{color:#d22;font-weight:700}</style></head>
+<body><h1>M3 합산 보기 · M2 손익 펼침 테스트 (설계서 §3.3.8, §3.2.9)</h1><ul id="out"></ul><p id="sum"></p>
+<script type="module">
+import { valueHolding, applyBuy, summarize } from './js/calc.js';
+import { holdingKey, groupRows, sortGroups, rowPl, rowValue, groupHref, accLabel, shortAccNames, leverageBadge, LEVERAGE_OPTS, accountChoices, pnlView, headlinePl, needFxHint } from './js/group.js';
+const out = document.getElementById('out'); let pass = 0, fail = 0;
+const near = (a, b, tol = 0.01) => a != null && Math.abs(a - b) <= tol;
+function t(name, cond, detail = '') { const li = document.createElement('li'); li.className = cond ? 'ok' : 'no'; li.textContent = `${cond ? '✔' : '✘'} ${name} ${cond ? '' : detail}`; out.appendChild(li); cond ? pass++ : fail++; }
+
+try {
+  // ---------- M3 (fx = 1,400, 현재가 $7.00) ----------
+  const fx = 1400;
+  const kiwoom = { id: 'k', name: '키움', buyFeePct: 0.25, sellFeePct: 0.25, sellTaxPct: 0.2, baseCurrency: 'USD' };
+  const toss = { id: 't', name: '토스', buyFeePct: 0.1, sellFeePct: 0.1, sellTaxPct: 0.2, baseCurrency: 'USD' };
+  const meritz = { id: 'm', name: '메리츠', buyFeePct: 0.015, sellFeePct: 0.015, sellTaxPct: 0.2, baseCurrency: 'KRW' };
+  const aisK = { id: 'a1', accountId: 'k', market: 'US', ticker: 'AIS', category: 'STOCK', quantity: 10, avgPrice: 5, costCurrency: 'USD' };
+  const aisT = { id: 'a2', accountId: 't', market: 'US', ticker: 'ais ', name: 'AIS Corp', category: 'STOCK', quantity: 20, avgPrice: 6, costCurrency: 'USD' };
+  let v = valueHolding(aisK, kiwoom, 7, fx);
+  t('M3-1 키움 평가 98,000 / base 70,175 / 손익 27,580 / 39.3017%', near(v.mvKrw, 98000) && near(v.base, 70175) && near(v.pnlKrw, 27580) && near(headlinePl(v).ret, 39.3017, 0.0001), `${v.mvKrw} ${v.base} ${v.pnlKrw} ${headlinePl(v).ret}`);
+  v = valueHolding(aisT, toss, 7, fx);
+  t('M3-2 토스 평가 196,000 / base 168,168 / 손익 27,636 / 16.4336%', near(v.mvKrw, 196000) && near(v.base, 168168) && near(v.pnlKrw, 27636) && near(headlinePl(v).ret, 16.4336, 0.0001), `${v.mvKrw} ${v.base} ${v.pnlKrw}`);
+
+  const accounts = [kiwoom, meritz, toss];
+  const S = (hs, f = fx, priceOf = () => 7) => summarize({ accounts, holdings: hs, cash: [], priceOf, fx: f });
+  const order = accounts.map((a) => a.id);
+  let gs = groupRows(S([aisK, aisT]).rows, { accountOrder: order });
+  let g = gs[0];
+  t('M3-3 합산 1행 · 30주 · 표시 평단 $5.6667(수수료 제외)', gs.length === 1 && g.quantity === 30 && near(g.avgPrice, 5.6667, 0.0001) && g.count === 2, JSON.stringify({ n: gs.length, q: g.quantity, a: g.avgPrice }));
+  t('M3-3 합산 평가 294,000 / 손익 55,216 / 수익률 23.1666% (= 55,216 ÷ 238,343)', near(g.mvKrw, 294000) && near(g.pnlKrw, 55216) && near(g.base, 238343) && near(g.ret, 23.1666, 0.0001), `${g.mvKrw} ${g.pnlKrw} ${g.ret}`);
+  t('M3-3 합산 달러 평가 $210.00, 모든 계좌 USD/USD → 목록 손익은 $ 기준(같은 기준 %)', near(g.mvNative, 210) && g.allUsd && rowPl(g).cur === 'USD' && near(rowPl(g).value, g.pnlUsd) && rowPl(g).ret === g.retUsd);
+  t('M3-3 합산 키 = 티커 대문자·trim, 표시 이름은 첫 계좌(계좌 순서) 것', g.key === 'US:AIS' && g.h.id === 'a1' && accLabel(g.accNames) === '키움 외 1', `${g.key} ${g.h.id} ${accLabel(g.accNames)}`);
+  t('M3 목록 링크: 여러 계좌 → #/holding/g/US%3AAIS, 한 계좌 → #/holding/:id', groupHref(g) === '#/holding/g/US%3AAIS' && decodeURIComponent('US%3AAIS') === g.key && groupHref(groupRows(S([aisK]).rows)[0]) === '#/holding/a1');
+  t('M3 현재가|평가금 토글: 평가금 $210 ↔ 현재가 $7', rowValue(g, 'mv').value === g.mvNative && rowValue(g, 'mv').cur === 'USD' && rowValue(g, 'price').value === 7 && rowValue(g, 'price').price === true);
+
+  // 두 계좌 합산 평단: 50주 @80 + 10주 @60
+  g = groupRows(S([{ ...aisK, quantity: 50, avgPrice: 80 }, { ...aisT, quantity: 10, avgPrice: 60 }]).rows)[0];
+  t('합산 60주 · 평단 (50×80+10×60)/60 = $76.6667', g.quantity === 60 && near(g.avgPrice, (50 * 80 + 10 * 60) / 60, 1e-9) && near(g.avgPrice, 76.6667, 0.0001), g.avgPrice);
+
+  // M3-4: 합산에서 매도 → 계좌 선택. 계좌 없이는 매도 폼 링크가 없다
+  const hs4 = [aisK, aisT, { ...aisK, id: 'a3', accountId: 'm', quantity: 0 }];
+  let ch = accountChoices(hs4, 'US:AIS', 'SELL', 't');
+  t('M3-4 매도 계좌 선택: 보유 수량 있는 계좌만, 마지막 사용 계좌(토스)가 맨 위', ch.length === 2 && ch[0].id === 'a2' && ch[1].id === 'a1', ch.map((h) => h.id).join());
+  ch = accountChoices(hs4, 'US:AIS', 'BUY', 'k');
+  t('M3-4 매수 계좌 선택: 이 종목을 가진 계좌(0주 포함), 마지막 사용 계좌 먼저', ch.length === 3 && ch[0].accountId === 'k');
+  const mainSrc = await (await fetch('./js/main.js', { cache: 'no-store' })).text();
+  const iG = mainSrc.indexOf("['/holding/g/:key'"), iE = mainSrc.indexOf("['/holding/:id/edit'");
+  t("M3-4 라우트: '/holding/g/:key'가 '/holding/:id/edit'보다 먼저", iG > 0 && iE > 0 && iG < iE, `${iG} ${iE}`);
+  const shSrc = await (await fetch('./js/screens/holdings.js', { cache: 'no-store' })).text();
+  t("M3-4 합산 상세의 매수·매도는 계좌 선택 시트(pickacc)로만 연다", /openSheet\('pickacc', \{ sid: key, side: 'SELL' \}\)/.test(shSrc) && !/GroupDetail[\s\S]*?trade\/SELL[\s\S]*?export function HoldingDetail/.test(shSrc));
+
+  // M3-5: 레버리지는 표시 전용
+  const nvdl1 = { id: 'n', accountId: 't', market: 'US', ticker: 'NVDL', category: 'ETF', quantity: 30, avgPrice: 120, costCurrency: 'USD' };
+  const g1 = groupRows(S([nvdl1], fx, () => 140).rows)[0], g2 = groupRows(S([{ ...nvdl1, leverage: 2 }], fx, () => 140).rows)[0];
+  t('M3-5 NVDL leverage=2 → "2배" 뱃지, 평가·손익은 leverage=1과 같다', leverageBadge(g2.leverage)?.text === '2배' && leverageBadge(g1.leverage) === null && g1.mvKrw === g2.mvKrw && g1.pnlKrw === g2.pnlKrw && g1.pnlUsd === g2.pnlUsd);
+  t('M3-5 뱃지 문구: −1 인버스(파랑) / 3 → 3배 / 1·빈 값 없음, 선택지 −1·1·2·3', leverageBadge(-1).text === '인버스' && leverageBadge(-1).cls === 'dn' && leverageBadge(3).text === '3배' && leverageBadge(1) === null && leverageBadge(undefined) === null && LEVERAGE_OPTS.map(([x]) => x).join() === '-1,1,2,3');
+
+  // M3-6: 국내 종목코드 없음 → 이름으로 묶는다
+  const emart = { id: 'e', accountId: 't', market: 'KR', name: '이마트', ticker: '', category: 'STOCK', quantity: 10, avgPrice: 75000, costCurrency: 'KRW' };
+  const sam = { id: 's', accountId: 'm', market: 'KR', name: '삼성전자', ticker: '', category: 'STOCK', quantity: 5, avgPrice: 70000, costCurrency: 'KRW' };
+  gs = groupRows(S([emart, sam], fx, () => null).rows);
+  t('M3-6 "이마트"·"삼성전자"(코드 없음) → 별개 행 2개', gs.length === 2 && holdingKey(emart) !== holdingKey(sam) && holdingKey(emart) === 'KR:이마트', gs.map((x) => x.key).join());
+  t('M3 국내 이름 띄어쓰기 차이는 한 행으로', holdingKey({ market: 'KR', name: '삼성 전자' }) === holdingKey(sam) && groupRows(S([sam, { ...sam, id: 's2', accountId: 't', name: '삼성 전자' }], fx, () => null).rows).length === 1);
+  t('M3 국내 합산 손익은 원화 기준', rowPl(gs[0]).cur === 'KRW' && rowValue(gs[0], 'mv').cur === 'KRW');
+
+  const sn = shortAccNames([{ id: 'k', name: '키움 · 해외주식' }, { id: 't', name: '토스 · 기본계좌' }, { id: 'm1', name: '메리츠 A' }, { id: 'm2', name: '메리츠 B' }]);
+  t('계좌 칩·행 짧은 이름: 첫 단어, 겹치면 전체 이름', sn.k === '키움' && sn.t === '토스' && sn.m1 === '메리츠 A' && sn.m2 === '메리츠 B', JSON.stringify(sn));
+  // 계좌 필터·시장 필터·0주·환율 없음·원가 통화 섞임
+  gs = groupRows(S([aisK, aisT, emart]).rows, { accountId: 't' });
+  t('계좌 필터(토스) → 그 계좌 행만, 합산 없음', gs.length === 2 && gs.every((x) => x.count === 1 && x.accountIds[0] === 't'));
+  t('시장 필터: 해외만 / 국내만', groupRows(S([aisK, emart]).rows, { market: 'US' }).length === 1 && groupRows(S([aisK, emart]).rows, { market: 'KR' })[0].key === 'KR:이마트');
+  t('0주 행은 합산에서 뺀다', groupRows(S([aisK, { ...aisT, quantity: 0 }]).rows)[0].count === 1);
+  g = groupRows(S([aisK, aisT], null).rows)[0];
+  t('환율 없음 → 합산 원화 값 계산 불가(null), 달러 평가는 보인다', g.mvKrw === null && g.pnlKrw === null && g.ret === null && near(g.mvNative, 210) && rowPl(g).value === g.pnlUsd);
+  g = groupRows(S([aisK, { ...aisT, avgPrice: 8400, costCurrency: 'KRW' }]).rows)[0];
+  t('원가 통화가 섞이면 표시 평단 없음("계좌마다 기준이 달라요"), 손익은 원화', g.mixedCost && g.avgPrice === null && !g.allUsd && rowPl(g).cur === 'KRW' && g.quantity === 30);
+  g = groupRows(S([aisK, aisT], fx, (h) => (h.id === 'a1' ? 7 : 7.1)).rows)[0];
+  t('계좌마다 시세가 다르면 pricesDiffer', g.pricesDiffer === true);
+
+  // 정렬
+  const sg = groupRows(S([aisK, nvdl1, emart], fx, (h) => (h.id === 'n' ? 100 : h.id === 'e' ? 80000 : 7)).rows);
+  const ids = (m) => sortGroups(sg, m).map((x) => x.h.id).join();
+  t('정렬 평가금액순(원화 환산) NVDL > 이마트 > AIS', ids('mv') === 'n,e,a1', ids('mv'));
+  t('정렬 수익률 높은 순 / 낮은 순', ids('retDesc') === 'a1,e,n' && ids('retAsc') === 'n,e,a1', `${ids('retDesc')} | ${ids('retAsc')}`);
+  t('정렬 이름순(한국어 정렬: 한글 먼저, 그다음 영문 ABC)', ids('name') === 'e,a1,n', ids('name'));
+
+  // ---------- M2 화면 규칙 (fx = 1,365.85) ----------
+  const fx2 = 1365.85, zero = { buyFeePct: 0, sellFeePct: 0, sellTaxPct: 0 };
+  const nvda = { market: 'US', category: 'STOCK', quantity: 40, avgPrice: 134, costCurrency: 'USD' };
+  const nvdaFx = { ...nvda, avgFx: 1300 };
+  v = valueHolding(nvdaFx, zero, 228.87, fx2);
+  t('M2-1 상세: 펼침 가능(split), 두 줄 합 = 큰 손익 5,536,083.58', pnlView(nvdaFx, v) === 'split' && near(v.pnlPrice + v.pnlFx, headlinePl(v).value) && near(headlinePl(v).value, 5536083.58));
+  t('M2-1 큰 손익 % = 원화 기준 79.4501% (달러 % 70.80 아님)', near(headlinePl(v).ret, 79.4501, 0.0001));
+  v = valueHolding(nvdaFx, { buyFeePct: 0.25, sellFeePct: 0.25 }, 228.87, fx2);
+  t('M2-2 수수료 있어도 두 줄 합 = 큰 손익 5,487,403.37', near(v.pnlPrice + v.pnlFx, 5487403.37) && near(headlinePl(v).value, 5487403.37) && near(headlinePl(v).ret, 78.5551, 0.0001));
+  const b4 = { ...nvda, ...applyBuy(nvda, 10, 200, 1400) };
+  v = valueHolding(b4, zero, 228.87, fx2);
+  t('M2-4 avgFx null 보유에 매수 → "매입환율 미기록 · 입력하기"(missing), 0으로 보이지 않음', b4.avgFx === null && pnlView(b4, v) === 'missing' && v.pnlFx === null);
+  t('M2-4 매수 뒤 안내 토스트: avgFx 없는 달러 종목 → 보인다', needFxHint(b4) === true);
+  const b3 = { ...nvdaFx, ...applyBuy(nvdaFx, 10, 200, 1400) };
+  t('M2-3 avgFx 있는 보유에 매수 → 안내 없음', needFxHint(b3) === false && pnlView(b3, valueHolding(b3, zero, 228.87, fx2)) === 'split');
+  const krwEtf = { market: 'US', category: 'ETF', quantity: 1, avgPrice: 325211, costCurrency: 'KRW' };
+  t('원화로 산 해외 ETF·국내 종목은 대상 아님(none), 안내 없음', pnlView(krwEtf, valueHolding(krwEtf, zero, 307.78, fx2)) === 'none' && pnlView(emart, valueHolding(emart, zero, 80000, fx2)) === 'none' && !needFxHint(krwEtf) && !needFxHint(emart));
+  v = valueHolding(nvdaFx, zero, 228.87, null);
+  t('현재 환율 없음 → 분해 계산 불가(noFx)', pnlView(nvdaFx, v) === 'noFx' && headlinePl(v).value === null);
+  v = valueHolding(nvda, { buyFeePct: 0.25, sellFeePct: 0.25 }, 228.87, fx2);
+  t('미기록 행의 큰 손익 = pnlKrw, % = 원화 기준(pnlKrw ÷ base)', near(headlinePl(v).value, v.pnlKrw) && near(headlinePl(v).ret, (v.pnlKrw / v.base) * 100, 1e-9));
+  t('홈·목록은 분해를 쓰지 않는다: 목록 행 손익은 pnlKrw/pnlUsd 기반', (() => { const gg = groupRows(summarize({ accounts: [{ id: 'z', ...zero }], holdings: [{ ...nvdaFx, id: 'x', accountId: 'z' }], cash: [], priceOf: () => 228.87, fx: fx2 }).rows)[0]; return near(rowPl(gg).value, 3794.8) && rowPl(gg).cur === 'USD'; })());
+} catch (e) { t('테스트 예외', false, e.stack || e.message); }
+
+document.getElementById('sum').innerHTML = `<b class="${fail ? 'no' : 'ok'}">통과 ${pass} / 실패 ${fail}</b>`;
+document.title = fail ? `FAIL ${fail}` : `PASS ${pass}`;
+</script></body></html>

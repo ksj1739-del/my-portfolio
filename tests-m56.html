@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ko" data-theme="light"><head><meta charset="utf-8"><title>M5·M6 배당·수익분석 테스트</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@18.3.1",
+  "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?external=react",
+  "htm": "https://esm.sh/htm@3.1.1"
+} }
+</script>
+<link rel="stylesheet" href="./css/app.css">
+<link rel="stylesheet" href="./css/m56.css">
+<style>body{font:14px system-ui;padding:16px;background:var(--bg);color:var(--t1)}.ok{color:#0a7}.no{color:#d22;font-weight:700}.demo{background:var(--card);padding:16px;max-width:420px;border-radius:12px;margin:12px 0}.demo h3{margin:0 0 8px;font-size:14px}</style></head>
+<body><h1>M5 받은 배당 · M6 수익분석 테스트 (설계서 §3.5.7, §3.6.7)</h1><ul id="out"></ul><p id="sum"></p>
+<h2>막대 차트 확인용(가짜 값, 앱 DB에는 쓰지 않음)</h2>
+<div class="demo"><h3>배당 12개월 · 8월 선택 · 10~12월 미래</h3><div id="b1"></div></div>
+<div class="demo"><h3>실현수익 연 보기 · 손실 달(기준선 아래)</h3><div id="b2"></div></div>
+<script type="module">
+import { dividendCalc, dividendChoices, qtyAtDate, payDateFx, dividendYear, dividendYears, defaultMonth, realizedPeriod, realizedYearBars, shiftMonth, divIn, sellValue } from './js/income.js';
+import { applySell } from './js/calc.js';
+import { barLayout } from './js/charts.js';
+import { netExternalCum, netExternalCumUsd } from './js/period.js';
+import { money, setHidden } from './js/format.js';
+const out = document.getElementById('out'); let pass = 0, fail = 0;
+const near = (a, b, tol = 0.005) => a != null && Math.abs(a - b) <= tol;
+function t(name, cond, detail = '') { const li = document.createElement('li'); li.className = cond ? 'ok' : 'no'; li.textContent = `${cond ? '✔' : '✘'} ${name} ${cond ? '' : detail}`; out.appendChild(li); cond ? pass++ : fail++; }
+
+// ---------- M5 계산 ----------
+const c1 = dividendCalc({ mode: 'per', perShare: 0.45, quantity: 100, taxRate: 15, currency: 'USD' });
+const d1 = { currency: 'USD', net: c1.net, gross: c1.gross, tax: c1.tax, fxRate: 1380, payDate: '2026-09-05' };
+t('M5-1 JEPQ 100주 × $0.45, 15% → gross $45.00 / tax $6.75 / net $38.25 / 52,785원', c1.gross === 45 && c1.tax === 6.75 && c1.net === 38.25 && near(divIn(d1, 'net', 'KRW', null), 52785), JSON.stringify(c1));
+const c4 = dividendCalc({ mode: 'per', perShare: 2000, quantity: 10, taxRate: 15.4, currency: 'KRW' });
+t('M5-4 이마트 10주 × 2,000원, 15.4% → 20,000 / 3,080 / 16,920', c4.gross === 20000 && c4.tax === 3080 && c4.net === 16920, JSON.stringify(c4));
+const c5 = dividendCalc({ mode: 'per', perShare: 0.45, quantity: 100, taxRate: 15, currency: 'USD', netOverride: 38.26 });
+t('M5-5 세후를 $38.26으로 직접 → tax $6.74 역산, gross $45.00 유지', c5.gross === 45 && c5.tax === 6.74 && c5.net === 38.26, JSON.stringify(c5));
+const ct = dividendCalc({ mode: 'total', gross: 45, quantity: 100, taxRate: 15, currency: 'USD' });
+t('M5 총액 입력 → perShare = gross ÷ quantity', ct.perShare === 0.45 && ct.net === 38.25);
+t('M5 세율 0 허용(ISA·연금)', dividendCalc({ mode: 'total', gross: 100, taxRate: 0, currency: 'USD' }).net === 100);
+t('M5 세후가 세전보다 크면 거부', !!dividendCalc({ mode: 'total', gross: 45, taxRate: 15, currency: 'USD', netOverride: 46 }).error);
+t('M5 원화 환산 $ 모드: KRW 배당 ÷ fxRate', near(divIn({ currency: 'KRW', net: 13800, fxRate: 1380 }, 'net', 'USD', 1400), 10));
+t('M5 fxRate 없으면 지금 환율', near(divIn({ currency: 'USD', net: 10 }, 'net', 'KRW', 1400), 14000));
+t('M5 지급일 환율: 그날 스냅샷 → 없으면 지금', payDateFx([{ date: '2026-09-05', usdKrw: 1380 }], '2026-09-05', 1400) === 1380 && payDateFx([], '2026-09-05', 1400) === 1400);
+
+// 지급일 보유 수량 + 예전 보유
+const jT = (id, side, q, d, extra = {}) => ({ id, accountId: 'K', market: 'US', ticker: 'JEPQ', side, quantity: q, tradedAt: d, ...extra });
+const trJ = [jT('a', 'BUY', 60, '2026-07-01', { initial: true }), jT('b', 'BUY', 40, '2026-08-01'), jT('c', 'SELL', 100, '2026-09-20')];
+const qa = qtyAtDate({ trades: trJ, holdings: [], key: 'US:JEPQ', accountId: 'K', date: '2026-09-05' });
+const qb = qtyAtDate({ trades: trJ, holdings: [], key: 'US:JEPQ', accountId: 'K', date: '2026-07-15' });
+t('M5 지급일 보유 수량: 9/5 = 100주, 7/15 = 60주 (전량 매도 뒤에도)', qa.quantity === 100 && !qa.check && qb.quantity === 60, JSON.stringify([qa, qb]));
+const qm = qtyAtDate({ trades: trJ.slice(0, 2), holdings: [{ accountId: 'K', market: 'US', ticker: 'JEPQ', quantity: 90 }], key: 'US:JEPQ', accountId: 'K', date: '2026-09-05' });
+t('M5 수량 직접 수정 흔적(거래 100 ≠ 보유 90) → 지금 수량 + 확인해 주세요', qm.quantity === 90 && qm.check);
+const q0 = qtyAtDate({ trades: trJ, holdings: [], key: 'US:JEPQ', accountId: 'K', date: '2026-06-01' });
+t('M5 지급일에 0주 → 0 + 확인(직접 입력)', q0.quantity === 0 && q0.check);
+const ch = dividendChoices([{ accountId: 'K', market: 'US', ticker: 'VIG', quantity: 5 }, { accountId: 'M', market: 'US', ticker: 'VIG', quantity: 3 }, { accountId: 'K', market: 'KR', name: '이마트', quantity: 0 }], trJ);
+const vig = ch.find((c) => c.key === 'US:VIG'), jepq = ch.find((c) => c.key === 'US:JEPQ'), emart = ch.find((c) => c.key === 'KR:이마트');
+t('M5 종목 목록: 보유 중(두 계좌면 계좌 2개) + 예전 보유(trades·0주)', vig && !vig.past && vig.accountIds.length === 2 && jepq && jepq.past && jepq.accountIds[0] === 'K' && emart && emart.past && ch[0].key === 'US:VIG', JSON.stringify(ch));
+
+// 연도 요약·기본 달
+const divs = [
+  { id: '1', holdingKey: 'US:JEPQ', market: 'US', ticker: 'JEPQ', accountId: 'K', payDate: '2026-08-05', currency: 'USD', gross: 45, tax: 6.75, net: 38.25, fxRate: 1380 },
+  { id: '2', holdingKey: 'KR:이마트', market: 'KR', name: '이마트', accountId: 'K', payDate: '2026-08-12', currency: 'KRW', gross: 20000, tax: 3080, net: 16920, fxRate: 1380 },
+  { id: '3', holdingKey: 'US:JEPQ', market: 'US', ticker: 'JEPQ', accountId: 'K', payDate: '2025-12-05', currency: 'USD', gross: 10, tax: 1.5, net: 8.5, fxRate: 1300 },
+];
+const Y = dividendYear(divs, 2026, 'KRW', 1400);
+t('M5 올해 받은 배당 = 52,785 + 16,920 = 69,705원, 세전 82,100 / 세금 12,395, 8월 막대', near(Y.net, 69705) && near(Y.gross, 82100) && near(Y.tax, 12395) && near(Y.months[7], 69705) && Y.counts[7] === 2, JSON.stringify(Y));
+const Yu = dividendYear(divs, 2026, 'USD', 1400);
+t('M5 $ 모드: USD 그대로 + KRW ÷ fxRate', near(Yu.net, 38.25 + 16920 / 1380));
+t('M5 연도 칩: 올해 + 기록 있는 해', JSON.stringify(dividendYears(divs, 2026)) === '[2026,2025]');
+t('M5 기본 달: 이번 달 기록 없으면 가장 최근 받은 달(8월), 지난해는 12월부터', defaultMonth(Y.counts, 2026, '2026-09-24') === 7 && defaultMonth(dividendYear(divs, 2025).counts, 2025, '2026-09-24') === 11 && defaultMonth(Array(12).fill(0), 2026, '2026-09-24') === 8);
+
+// ---------- M6 ----------
+const nvda = { id: 'S1', side: 'SELL', market: 'US', ticker: 'NVDA', accountId: 'K', tradedAt: '2026-09-18', priceCurrency: 'USD', realizedKrw: 1610560, realizedNative: 1150.40, fxRate: 1400 };
+const jepqDiv = { id: 'D1', holdingKey: 'US:JEPQ', market: 'US', ticker: 'JEPQ', accountId: 'K', payDate: '2026-09-05', currency: 'USD', gross: 45, tax: 6.75, net: 38.25, fxRate: 1380 };
+const intr = { id: 'I1', type: 'interest', accountId: 'K', currency: 'KRW', amount: 1234, date: '2026-09-10' };
+const base = { trades: [nvda], dividends: [jepqDiv], cashTx: [intr], fxNow: 1400 };
+let R = realizedPeriod({ ...base, period: '2026-09' });
+t('M6-1 판매 1,610,560 / 배당 52,785 / 이자 1,234 / 합 1,664,579', near(R.sell, 1610560) && near(R.div, 52785) && near(R.interest, 1234) && near(R.total, 1664579), JSON.stringify(R));
+const s2 = applySell({ market: 'US', category: 'STOCK', quantity: 40, avgPrice: 134, costCurrency: 'USD', avgFx: 1300 }, { buyFeePct: 0.25, sellFeePct: 0.25 }, 10, 250, 1400);
+R = realizedPeriod({ ...base, trades: [{ ...nvda, realizedKrw: s2.realizedKrw, realizedKrwAcq: s2.realizedKrwAcq }], period: '2026-09' });
+t('M6-2 avgFx 1,300 매도(M2-5) → 판매 1,744,895 / 합 1,798,914', near(R.sell, 1744895, 0.5) && near(R.total, 1798914, 0.5), JSON.stringify(R));
+R = realizedPeriod({ ...base, period: '2026-09', market: 'US' });
+t('M6-3 해외 필터 → 1,610,560 + 52,785 = 1,663,345, 이자 제외', near(R.total, 1663345) && R.interest === 0 && R.interestHidden);
+t('M6 국내 필터 → 0(해외만 있는 달)', realizedPeriod({ ...base, period: '2026-09', market: 'KR' }).total === 0);
+R = realizedPeriod({ ...base, trades: [nvda, { id: 'S2', side: 'SELL', market: 'US', ticker: 'AAPL', accountId: 'K', tradedAt: '2026-09-19', priceCurrency: 'USD', realizedKrw: null, realizedNative: 50 }], period: '2026-09' });
+t('M6-4 환율 없이 기록된 매도 1건 → 합계 불변 + 빠진 건수 1', near(R.total, 1664579) && R.noFxSells === 1);
+R = realizedPeriod({ ...base, trades: [{ ...nvda, closed: true }], period: '2026-09' });
+t('M6-5 전량 매도 후 정리(closed) 종목도 그 달 리스트에 그대로', R.items.some((i) => i.key === 'US:NVDA' && near(i.sell, 1610560) && i.closed));
+t('M6 종목별 리스트: 매도·배당·이자 행', R.items.length === 3 && R.items.find((i) => i.kind === 'interest').accountId === 'K');
+R = realizedPeriod({ ...base, period: '2026-09', cur: 'USD' });
+t('M6 $ 모드: 매도 realizedNative $1,150.40 + 배당 $38.25 + 이자 1,234 ÷ 1,400(추정)', near(R.sell, 1150.40) && near(R.div, 38.25) && near(R.interest, 1234 / 1400) && R.estimated, JSON.stringify(R));
+t('M6 $ 모드 국내 매도: realizedKrw ÷ 매도 환율, 없으면 지금 환율(추정)', near(sellValue({ realizedKrw: 14000, fxRate: 1400 }, 'USD', 1300).v, 10) && sellValue({ realizedKrw: 13000 }, 'USD', 1300).est === true);
+R = realizedPeriod({ ...base, trades: [{ ...nvda, realizedKrw: -500000 }], dividends: [], cashTx: [], period: '2026-09' });
+t('M6 손실 달 → 합계 음수', R.total === -500000);
+R = realizedPeriod({ ...base, trades: [], period: '2026-09' });
+t('M6 배당만 있고 매도 없는 달 → 판매수익 0 유지', R.sell === 0 && near(R.total, 52785 + 1234));
+const bars = realizedYearBars(base, 2026);
+t('M6 연 보기 12개월: 9월 = 1,664,579, 나머지 0, 연 합계 같음', bars.length === 12 && near(bars[8], 1664579) && bars.filter((v) => v).length === 1 && near(realizedPeriod({ ...base, period: '2026' }).total, 1664579));
+t('M6 계좌 필터', realizedPeriod({ ...base, period: '2026', accountId: 'X' }).total === 0);
+t('M6 달 이동: 1월 − 1 = 지난해 12월, 12월 + 1 = 다음 해 1월', shiftMonth('2026-01', -1) === '2025-12' && shiftMonth('2025-12', 1) === '2026-01' && shiftMonth('2026-09', -12) === '2025-09');
+
+// ---------- 막대 배치 ----------
+const L = barLayout([100, -50, 0, null], 150);
+t('막대: 기준선 = 양수 몫(100px), 음수는 기준선 아래, null은 빈 칸, 0은 높이 0', L.zero === 100 && L.bars[0].top === 0 && L.bars[0].h === 100 && L.bars[1].neg && L.bars[1].top === 100 && L.bars[1].h === 50 && L.bars[2].h === 0 && L.bars[3].empty, JSON.stringify(L));
+t('막대: 아주 작은 값도 최소 2px', barLayout([1000, 1], 100).bars[1].h === 2);
+t('막대: 모두 0이면 기준선은 바닥', barLayout([0, 0], 80).zero === 80);
+
+// ---------- 저장소(버리는 IndexedDB 이름으로) ----------
+await (async () => {
+  const NAME = 'portfolio-test-m56-' + Date.now();
+  globalThis.__PORTFOLIO_DB__ = NAME;
+  const db = await import('./js/db.js');
+  const S = await import('./js/store.js');
+  const B = (a, c) => S.cashBalance(a, c);
+  try {
+    t('설정 기본값: holdingSort mv / holdingMarket all / 배당 세율 US 15·KR 15.4', S.DEFAULT_SETTINGS.holdingSort === 'mv' && S.DEFAULT_SETTINGS.holdingMarket === 'all' && S.DEFAULT_SETTINGS.divTaxDefault.US === 15 && S.DEFAULT_SETTINGS.divTaxDefault.KR === 15.4);
+    await S.saveAccount({ id: 'K', name: '키움', currencies: ['KRW', 'USD'], baseCurrency: 'USD', buyFeePct: 0.25, sellFeePct: 0.25, sellTaxPct: 0 });
+    await db.kvSet('fx', { rate: 1400, asOf: new Date().toISOString(), source: 'manual' });
+    // 온보딩 중(onboarded=false) 종목 추가 → 외부 유입 기록 안 함
+    const h0 = await S.addHolding({ accountId: 'K', market: 'US', ticker: 'JEPQ', category: 'ETF', quantity: 100, avgPrice: 50, costCurrency: 'USD' }, { tradedAt: '2026-08-01' });
+    let st = await S.loadAll();
+    const t0 = st.trades.find((x) => x.holdingId === h0.id);
+    t('갭1 온보딩 중 종목 추가 → externalKrw 없음(기준선)', !('externalKrw' in t0));
+    await S.saveSettings({ onboarded: true });
+    const h1 = await S.addHolding({ accountId: 'K', market: 'US', ticker: 'VIG', category: 'ETF', quantity: 10, avgPrice: 180, costCurrency: 'USD', manualPrice: 200 }, { tradedAt: '2026-09-01' });
+    st = await S.loadAll();
+    const t1 = st.trades.find((x) => x.holdingId === h1.id);
+    t('갭1 온보딩 뒤 종목 추가 → 10 × $200(입력 현재가) = $2,000 / 2,800,000원 고정', t1.externalUsd === 2000 && t1.externalKrw === 2800000 && t1.externalFx === 1400, JSON.stringify(t1));
+    t('갭1 period.js 순유입 누계에 들어감(원·$)', netExternalCum([], '2026-09-24', st.trades) === 2800000 && netExternalCumUsd([], '2026-09-24', st.trades) === 2000 && netExternalCum([], '2026-08-31', st.trades) === 0);
+    await S.updateHolding({ ...h1, quantity: 20, manualPrice: null });
+    st = await S.loadAll();
+    const t1b = st.trades.find((x) => x.holdingId === h1.id);
+    t('갭1 처음 보유만 있는 종목 수정 → 같은 환율로 다시 계산(20 × $180 = $3,600 / 5,040,000원)', t1b.externalUsd === 3600 && t1b.externalKrw === 5040000 && t1b.quantity === 20);
+    const h2 = await S.addHolding({ accountId: 'K', market: 'KR', name: '이마트', category: 'STOCK', quantity: 10, avgPrice: 60000 });
+    await S.updateHolding({ ...h0, quantity: 100 });
+    t('갭1 옛(외부 유입 없는) 초기 보유 수정 → 외부 유입 새로 만들지 않음', !('externalKrw' in (await S.loadAll()).trades.find((x) => x.holdingId === h0.id)));
+    await S.deleteHolding(h2.id);
+    st = await S.loadAll();
+    t('갭1 처음 보유만 있는 종목 삭제 → 유입 기록도 사라짐', !st.trades.some((x) => x.holdingId === h2.id) && netExternalCum([], '2026-12-31', st.trades) === 5040000);
+    // 이자 환율 저장
+    const [ir] = await S.addCashTx({ type: 'interest', accountId: 'K', currency: 'USD', amount: 1.5 });
+    t('M6 이자 행에 기록 시점 환율 저장(원/$ 환산용)', ir.fxRate === 1400 && ir.external === false);
+    await S.deleteCashTx(ir.id);
+
+    // M5-2 / M5-3 / M5-6
+    const usd0 = await B('K', 'USD');
+    const hj = { market: 'US', ticker: 'JEPQ', name: '' };
+    const dv = await S.saveDividend({ holding: hj, accountId: 'K', payDate: '2026-09-05', mode: 'per', perShare: 0.45, quantity: 100, taxRate: 15, currency: 'USD', fxRate: 1380, applyCash: true });
+    t('M5-2 현금 반영 켬 → 키움 USD +$38.25, cashApplied = net', (await B('K', 'USD')) === usd0 + 38.25 && dv.cashApplied.amount === 38.25 && dv.cashApplied.accountId === 'K' && dv.holdingKey === 'US:JEPQ', JSON.stringify(dv));
+    st = await S.loadAll();
+    t('M5 세율을 그 종목 기본값으로 기억(settings.divTaxRate)', st.settings.divTaxRate['US:JEPQ'] === 15);
+    const dv2 = await S.saveDividend({ holding: hj, accountId: 'K', payDate: '2026-09-05', mode: 'per', perShare: 0.45, quantity: 100, taxRate: 15, currency: 'USD', fxRate: 1380, applyCash: true, netOverride: 38.26 }, dv.id);
+    t('M5-5 수정: 세후 $38.26 → tax $6.74, cashApplied도 갱신(+$38.26), id·createdAt 유지', dv2.id === dv.id && dv2.createdAt === dv.createdAt && dv2.tax === 6.74 && (await B('K', 'USD')) === usd0 + 38.26 && (await S.loadAll()).dividends.length === 1);
+    await S.deleteDividend(dv.id);
+    st = await S.loadAll();
+    t('M5-3 삭제 → USD 잔액 원래대로, 고아 행 없음', (await B('K', 'USD')) === usd0 && st.dividends.length === 0 && !st.cashTx.some((r) => r.type === 'div'));
+    const dv6 = await S.saveDividend({ holding: hj, accountId: 'K', payDate: '2026-09-05', mode: 'total', gross: 45, quantity: 100, taxRate: 15, currency: 'USD', fxRate: 1380, applyCash: false });
+    st = await S.loadAll();
+    t('M5-6 현금 반영 끔 → cashApplied 없음, 잔액 변화 없음, 배당 합계에는 포함', !dv6.cashApplied && (await B('K', 'USD')) === usd0 && near(dividendYear(st.dividends, 2026, 'KRW').net, 52785));
+    // M5-7: JEPQ 전량 매도 후에도 이력 유지
+    const hq = st.holdings.find((x) => x.id === h0.id);
+    await S.recordTrade({ holding: hq, account: st.accounts[0], side: 'SELL', quantity: 100, price: 55, fxRate: 1400, tradedAt: '2026-09-20', applyCash: false });
+    await S.deleteHolding(h0.id);
+    st = await S.loadAll();
+    t('M5-7 JEPQ 전량 매도·삭제 후 → 배당 이력·월 막대 그대로, 종목 목록에 예전 보유', st.dividends.length === 1 && near(dividendYear(st.dividends, 2026, 'KRW').months[8], 52785) && dividendChoices(st.holdings, st.trades).find((c) => c.key === 'US:JEPQ')?.past === true);
+    const q7 = qtyAtDate({ trades: st.trades, holdings: st.holdings, key: 'US:JEPQ', accountId: 'K', date: '2026-09-05' });
+    t('M5 예전 보유 종목의 지급일 수량(9/5 = 100주)', q7.quantity === 100 && !q7.check, JSON.stringify(q7));
+    let fe = ''; try { await S.saveDividend({ holding: hj, accountId: 'K', payDate: '2999-01-01', mode: 'total', gross: 1, taxRate: 15, currency: 'USD' }); } catch (e) { fe = e.message; }
+    t('M5 미래 지급일 거부("예상 배당은 2차에서")', fe.includes('2차'));
+    const dk = await S.saveDividend({ holding: { market: 'KR', name: '이마트' }, accountId: 'K', payDate: '2026-09-12', mode: 'per', perShare: 2000, quantity: 10, taxRate: 15.4, applyCash: true });
+    t('M5-4 저장: 국내 → KRW, 16,920원 현금 반영, fxRate 참고 저장(지금 환율)', dk.currency === 'KRW' && dk.net === 16920 && dk.cashApplied.currency === 'KRW' && dk.fxRate === 1400);
+    const ex = await S.exportData();
+    t('백업에 배당 포함', ex.data.dividends.length === 2);
+  } catch (e) { t('저장소 테스트 예외', false, e.stack || e.message); }
+  await db.closeDB();
+  indexedDB.deleteDatabase(NAME);
+})();
+
+// ---------- 가리기: 막대 접근성 문장도 가려짐 ----------
+const { html, createRoot } = await import('./js/react.js');
+const { BarChart } = await import('./js/charts.js');
+const months = Array.from({ length: 12 }, (_, i) => String(i + 1));
+const v1 = [12000, 30000, 8000, 5000, 42000, 21000, 9000, 69705, 15000, null, null, null];
+createRoot(document.getElementById('b1')).render(html`<${BarChart} values=${v1} labels=${months} selected=${7} onSelect=${() => {}} label="배당" barLabel=${(i) => `${i + 1}월 ${money(v1[i], 'KRW')}`} />`);
+const v2 = [120000, -50000, 300000, 0, 80000, -150000, 40000, 20000, 1664579, null, null, null];
+setHidden(true);
+createRoot(document.getElementById('b2')).render(html`<${BarChart} values=${v2} labels=${months} tone="pl" label="실현수익" barLabel=${(i) => `${i + 1}월 ${money(v2[i], 'KRW', { sign: true })}`} />`);
+await new Promise((r) => setTimeout(r, 300));
+const labs = [...document.querySelectorAll('#b2 .bc-col')].map((b) => b.getAttribute('aria-label'));
+t('가리기 켬 → 막대 aria-label 금액도 •••••', labs.length === 12 && labs[0].includes('•••••') && !labs.some((l) => /\d{2,},/.test(l)), JSON.stringify(labs.slice(0, 2)));
+t('미래 달 막대는 비활성', document.querySelectorAll('#b1 .bc-col:disabled').length === 3 && document.querySelector('#b1 .bc-col.on') != null);
+t('음수 막대는 기준선 아래(neg 클래스 2개)', document.querySelectorAll('#b2 .bc-bar.neg').length === 2);
+setHidden(false);
+
+document.getElementById('sum').innerHTML = `<b class="${fail ? 'no' : 'ok'}">통과 ${pass} / 실패 ${fail}</b>`;
+document.title = fail ? `FAIL ${fail}` : `PASS ${pass}`;
+</script></body></html>

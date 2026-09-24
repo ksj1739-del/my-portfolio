@@ -3,7 +3,7 @@
 <style>body{font:14px system-ui;padding:16px}.ok{color:#0a7}.no{color:#d22;font-weight:700}</style></head>
 <body><h1>계산 엔진 테스트 (설계서 §5.4)</h1><ul id="out"></ul><p id="sum"></p>
 <script type="module">
-import { valueHolding, applyBuy, applySell, summarize, guessMarket } from './js/calc.js';
+import { valueHolding, applyBuy, applySell, summarize, guessMarket, deriveCash, defaultTradeFx, EPOCH } from './js/calc.js';
 const out = document.getElementById('out'); let pass = 0, fail = 0;
 const near = (a, b, tol = 0.01) => Math.abs(a - b) <= tol;
 function t(name, cond, detail = '') { const li = document.createElement('li'); li.className = cond ? 'ok' : 'no'; li.textContent = `${cond ? '✔' : '✘'} ${name} ${cond ? '' : detail}`; out.appendChild(li); cond ? pass++ : fail++; }
@@ -58,6 +58,186 @@ t('빈 데이터 수익률 null, NaN 없음', sm0.ret === null && sm0.total === 
 const smfx = summarize({ accounts: [kiwoom], holdings: [hs[0]], cash: [], priceOf: (h) => h.p, fx: null });
 t('환율 없음 → fxMissing', smfx.fxMissing === true && smfx.total === 0);
 t('시장 판별', guessMarket('005930') === 'KR' && guessMarket('0091C0') === 'KR' && guessMarket('삼성전자') === 'KR' && guessMarket('NVDA') === 'US' && guessMarket('BRK-B') === 'US');
+// ---------- v2 S1: M2 데이터층 (fx = 1,365.85) ----------
+const nvdaFx = { ...nvda, avgFx: 1300 };
+v = valueHolding(nvdaFx, zero, 228.87, fx);
+t('M2-1 평가 12,504,083.58 / 취득 원가 6,968,000', near(v.mvKrw, 12504083.58) && near(v.costKrwAcq, 6968000), `${v.mvKrw} ${v.costKrwAcq}`);
+t('M2-1 주가로 5,183,127.58 / 환율로 352,956 / 합 5,536,083.58', near(v.pnlPrice, 5183127.58) && near(v.pnlFx, 352956) && near(v.pnlKrwAcq, 5536083.58) && near(v.pnlPrice, v.pnlKrw), `${v.pnlPrice} ${v.pnlFx} ${v.pnlKrwAcq}`);
+t('M2-1 원화 수익률 79.4501%', near(v.retKrwPct, 79.4501, 0.0001) && v.fxKnown === true, v.retKrwPct);
+t('M2-1 기존 필드 유지(costKrw·pnlKrw·retPct)', near(v.costKrw, 7320956) && near(v.retPct, 70.7985, 0.001));
+v = valueHolding(nvdaFx, { buyFeePct: 0.25, sellFeePct: 0.25 }, 228.87, fx);
+t('M2-2 주가로 5,133,564.98 / 환율로 353,838.39 / 합 5,487,403.37', near(v.pnlPrice, 5133564.98) && near(v.pnlFx, 353838.39) && near(v.pnlKrwAcq, 5487403.37), `${v.pnlPrice} ${v.pnlFx} ${v.pnlKrwAcq}`);
+t('M2-2 baseAcq 6,985,420 / 원화 수익률 78.5551%', near(v.baseAcq, 6985420) && near(v.retKrwPct, 78.5551, 0.0001), `${v.baseAcq} ${v.retKrwPct}`);
+v = valueHolding(nvda, zero, 228.87, fx);
+t('M2 avgFx 없음 → fxKnown=false, 분해 null(0 아님)', v.fxKnown === false && v.pnlFx === null && v.pnlKrwAcq === null && near(v.pnlKrw, 5183127.58));
+v = valueHolding(nvdaFx, zero, 228.87, null);
+t('M2 현재 환율 없음 → 분해 계산 불가(null)', v.fxKnown === true && v.pnlFx === null && v.mvKrw === null);
+const b3 = applyBuy(nvdaFx, 10, 200, 1400);
+t('M2-3 50주 / $147.20 / avgFx 1,327.1739 / 취득 원가 9,768,000', b3.quantity === 50 && near(b3.avgPrice, 147.2) && near(b3.avgFx, 1327.1739, 0.0001) && near(b3.quantity * b3.avgPrice * b3.avgFx, 9768000), JSON.stringify(b3));
+const b4 = applyBuy(nvda, 10, 200, 1400);
+t('M2-4 avgFx null 보유에 환율 넣고 매수 → null 유지', b4.avgFx === null);
+t('M2 환율 비우고 매수 → avgFx null', applyBuy(nvdaFx, 10, 200, null).avgFx === null);
+t('M2 수량 0에서 재매수 → 이번 환율로 새로 시작', applyBuy({ ...nvda, quantity: 0, avgPrice: 0, avgFx: null }, 5, 100, 1390).avgFx === 1390);
+t('M2 원화로 산 해외 ETF는 avgFx 대상 아님', applyBuy({ market: 'US', quantity: 0, avgPrice: 0, costCurrency: 'KRW' }, 1, 300000, 1400).avgFx === null);
+const s5 = applySell(nvdaFx, { buyFeePct: 0.25, sellFeePct: 0.25 }, 10, 250, 1400);
+t('M2-5 realizedKrw 1,744,895 / Acq 1,744,895 / Fx 134,335 / $1,150.40', near(s5.realizedKrw, 1744895) && near(s5.realizedKrwAcq, 1744895) && near(s5.realizedFxKrw, 134335) && near(s5.realizedNative, 1150.40) && s5.avgFx === 1300, JSON.stringify(s5));
+const s6 = applySell(nvda, { buyFeePct: 0.25, sellFeePct: 0.25 }, 10, 250, 1400);
+t('M2-6 avgFx null → 1,610,560 (v1과 같음), Acq null', near(s6.realizedKrw, 1610560) && s6.realizedKrwAcq === null && s6.realizedFxKrw === null, JSON.stringify(s6));
+t('M2 전량 매도 → avgFx null', applySell(nvdaFx, zero, 40, 250, 1400).avgFx === null);
+t('M2 매도 환율 없음 → realizedKrw null', applySell(nvdaFx, zero, 10, 250, null).realizedKrw === null);
+const smb = summarize({ accounts: [{ id: 'z', ...zero }], holdings: [{ ...nvdaFx, accountId: 'z' }, { ...nvda, accountId: 'z' }], cash: [], priceOf: () => 228.87, fx });
+t('M2 summarize best 필드(pnlKrwAcq ?? pnlKrw)', near(smb.pnlKrwBest, 5536083.58 + 5183127.58) && smb.fxKnownCount === 1 && smb.usdRowCount === 2 && near(smb.pnlKrw, 2 * 5183127.58), `${smb.pnlKrwBest}`);
+
+// ---------- v2 S1: M1 잔액 계산(deriveCash 순수 함수) ----------
+const accK = { id: 'K', currencies: ['KRW', 'USD'] };
+const bal = (arr, a, c) => arr.find((x) => x.accountId === a && x.currency === c)?.amount;
+const MIG = '2026-09-24T00:00:00.000Z';
+let dc = deriveCash({ accounts: [accK], cashTx: [{ accountId: 'K', currency: 'KRW', amount: 1000000, type: 'adjust' }], trades: [], dividends: [], migratedAt: MIG });
+t('M1-1 기초 잔액 1,000,000 · 빈 통화도 0으로', bal(dc, 'K', 'KRW') === 1000000 && bal(dc, 'K', 'USD') === 0 && dc[0].id === 'K:KRW');
+const preTrade = { accountId: 'K', createdAt: '2026-09-01T00:00:00.000Z', cashApplied: { currency: 'KRW', amount: -300000 } };
+const postTrade = { accountId: 'K', createdAt: '2026-09-25T00:00:00.000Z', cashApplied: { currency: 'KRW', amount: -300000 } };
+dc = deriveCash({ accounts: [accK], cashTx: [{ accountId: 'K', currency: 'KRW', amount: 1500000 }], trades: [preTrade, postTrade, { accountId: 'K', createdAt: '2026-09-26' }], dividends: [], migratedAt: MIG });
+t('M1-3 마이그레이션 이후 cashApplied만 합산(이전 것은 기초 잔액에 녹아 있음)', bal(dc, 'K', 'KRW') === 1200000, bal(dc, 'K', 'KRW'));
+dc = deriveCash({ accounts: [accK], cashTx: [], trades: [preTrade], dividends: [] });
+t('M1 cashMigratedAt 없음 → 기원 시각, 모든 cashApplied 합산', bal(dc, 'K', 'KRW') === -300000);
+dc = deriveCash({ accounts: [accK], cashTx: [], trades: [], dividends: [{ accountId: 'K', cashApplied: { accountId: 'K', currency: 'USD', amount: 38.25 } }] });
+t('M1 배당 cashApplied 합산(M5 대비)', bal(dc, 'K', 'USD') === 38.25);
+dc = deriveCash({ accounts: [accK], cashTx: [{ accountId: 'K', currency: 'USD', amount: 0.01 }, { accountId: 'K', currency: 'USD', amount: 93.31 }, { accountId: 'K', currency: 'USD', amount: 0.83 }], trades: [], dividends: [] });
+t('M1 부동소수 잡음 제거(0.01+93.31+0.83=94.15)', bal(dc, 'K', 'USD') === 94.15, bal(dc, 'K', 'USD'));
+dc = deriveCash({ accounts: [accK], cashTx: [{ accountId: 'K', currency: 'KRW', amount: 100 }], trades: [{ accountId: 'K', createdAt: '2026-09-25', cashApplied: { currency: 'KRW', amount: -300 } }], dividends: [], migratedAt: MIG });
+t('M1-5 음수 잔액 허용(−200, 클램프 없음)', bal(dc, 'K', 'KRW') === -200);
+const sneg = summarize({ accounts: [accK], holdings: [], cash: dc, priceOf: () => null, fx });
+t('M1 음수 잔액은 합계에 그대로', sneg.total === -200 && sneg.cashKRW === -200);
+const snaps = [{ date: '2026-09-20', usdKrw: 1350 }];
+const fxRows = [{ type: 'fx', accountId: 'K', fxRate: 1372.5, date: '2026-09-10', createdAt: 'a' }, { type: 'fx', accountId: 'X', fxRate: 1111, date: '2026-09-23', createdAt: 'b' }];
+t('M2 매수 환율 기본값 ① 같은 계좌 최근 환전(30일 이내)', defaultTradeFx({ cashTx: fxRows, snapshots: snaps, accountId: 'K', date: '2026-09-24', today: '2026-09-24', fxRate: 1360 }).rate === 1372.5);
+t('M2 매수 환율 기본값 ① 30일 지나면 제외 → ③ 현재 환율', defaultTradeFx({ cashTx: fxRows, snapshots: snaps, accountId: 'K', date: '2026-10-30', today: '2026-10-30', fxRate: 1360 }).rate === 1360);
+t('M2 매수 환율 기본값 ② 지난 날짜면 그날 스냅샷 환율', defaultTradeFx({ cashTx: [], snapshots: snaps, accountId: 'K', date: '2026-09-20', today: '2026-09-24', fxRate: 1360 }).rate === 1350);
+
+// ---------- v2 S1: 저장소(버리는 IndexedDB 이름으로) ----------
+await (async () => {
+  const NAME = 'portfolio-test-' + Date.now();
+  globalThis.__PORTFOLIO_DB__ = NAME;
+  // v1 DB를 손으로 만든다(키움 KRW 1,000,000 + 업그레이드 전 매수 cashApplied −300,000)
+  await new Promise((res, rej) => {
+    const r = indexedDB.open(NAME, 1);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      d.createObjectStore('accounts', { keyPath: 'id' });
+      d.createObjectStore('holdings', { keyPath: 'id' }).createIndex('accountId', 'accountId');
+      d.createObjectStore('trades', { keyPath: 'id' }).createIndex('holdingId', 'holdingId');
+      d.createObjectStore('cash', { keyPath: 'id' }); d.createObjectStore('kv', { keyPath: 'key' }); d.createObjectStore('snapshots', { keyPath: 'date' });
+    };
+    r.onsuccess = () => {
+      const d = r.result, tx = d.transaction(['accounts', 'holdings', 'trades', 'cash', 'kv'], 'readwrite');
+      tx.objectStore('accounts').put({ id: 'K', name: '키움', order: 0, baseCurrency: 'KRW', currencies: ['KRW', 'USD'], buyFeePct: 0, sellFeePct: 0, sellTaxPct: 0 });
+      tx.objectStore('holdings').put({ id: 'OLD', accountId: 'K', market: 'KR', name: '옛ETF', category: 'ETF', quantity: 10, avgPrice: 30000 });
+      tx.objectStore('trades').put({ id: 'T0', holdingId: 'OLD', accountId: 'K', market: 'KR', name: '옛ETF', side: 'BUY', tradedAt: '2026-09-01', quantity: 10, price: 30000, quantityBefore: 0, avgPriceBefore: 0, createdAt: '2026-09-01T00:00:00.000Z', cashApplied: { currency: 'KRW', amount: -300000 } });
+      tx.objectStore('cash').put({ id: 'K:KRW', accountId: 'K', currency: 'KRW', amount: 1000000 });
+      tx.objectStore('cash').put({ id: 'K:USD', accountId: 'K', currency: 'USD', amount: 0 });
+      tx.objectStore('kv').put({ key: 'settings', value: { quote: { url: 'https://x', token: 'SECRET' } } });
+      tx.oncomplete = () => { d.close(); res(); }; tx.onerror = () => rej(tx.error);
+    };
+    r.onerror = () => rej(r.error);
+  });
+  const db = await import('./js/db.js');
+  const S = await import('./js/store.js');
+  const B = async (a, c) => S.cashBalance(a, c);
+  try {
+    let st = await S.loadAll();
+    const mig = st.cashTx.filter((r) => r.system === 'migration');
+    t('M1-1 업그레이드 → adjust +1,000,000 1행(0원 행 없음), 잔액 1,000,000', mig.length === 1 && mig[0].amount === 1000000 && mig[0].type === 'adjust' && mig[0].memo === '기초 잔액' && (await B('K', 'KRW')) === 1000000, JSON.stringify(mig));
+    const pre = await db.kvGet('preV2Backup');
+    t('M1 업그레이드 직전 백업 kv.preV2Backup(토큰 제외)', pre && pre.schemaVersion === 1 && pre.data.cash.length === 2 && pre.data.kv.find((r) => r.key === 'settings').value.quote.token === '');
+    t('M1 cashMigratedAt 기록', st.cashMigratedAt > '2026' && st.cashMigratedAt === mig[0].createdAt);
+    await S.addCashTx({ type: 'deposit', accountId: 'K', currency: 'KRW', amount: 500000, memo: '월급' });
+    t('M1-2 입금 +500,000 → 1,500,000', (await B('K', 'KRW')) === 1500000);
+    const dep = (await S.loadAll()).cashTx.find((r) => r.type === 'deposit');
+    t('M1 입금은 external + krwValue 고정', dep.external === true && dep.krwValue === 500000);
+    const h = await S.addHolding({ accountId: 'K', market: 'KR', name: '국내ETF', category: 'ETF', quantity: 1, avgPrice: 30000 });
+    const acc = (await S.loadAll()).accounts[0];
+    const { trade } = await S.recordTrade({ holding: h, account: acc, side: 'BUY', quantity: 10, price: 30000, tradedAt: '2026-09-24', applyCash: true });
+    t('M1-3 매수 10주 × 30,000 현금 반영 → cashApplied −300,000, 잔액 1,200,000', trade.cashApplied.amount === -300000 && (await B('K', 'KRW')) === 1200000);
+    const n0 = (await S.loadAll()).cashTx.length;
+    await S.undoTrade(trade.id);
+    st = await S.loadAll();
+    t('M1-4 되돌리기 → 거래 삭제, 잔액 1,500,000, 보정 행 없음', !st.trades.find((x) => x.id === trade.id) && (await B('K', 'KRW')) === 1500000 && st.cashTx.length === n0);
+    await S.undoTrade('T0');
+    st = await S.loadAll();
+    const comp = st.cashTx.find((r) => r.system === 'undo');
+    t('M1-6 업그레이드 전 매수 되돌리기 → adjust +300,000(undo), 잔액 +300,000', comp && comp.amount === 300000 && comp.memo.includes('옛ETF') && (await B('K', 'KRW')) === 1800000, JSON.stringify(comp));
+    // M1-5
+    const a2 = await S.saveAccount({ name: '소액', currencies: ['KRW'], buyFeePct: 0, sellFeePct: 0, sellTaxPct: 0, baseCurrency: 'KRW' });
+    await S.setCashTo(a2.id, 'KRW', 100);
+    const h2 = await S.addHolding({ accountId: a2.id, market: 'KR', name: '싼주식', category: 'ETF', quantity: 1, avgPrice: 300 });
+    const r5 = await S.recordTrade({ holding: h2, account: a2, side: 'BUY', quantity: 1, price: 300, tradedAt: '2026-09-24', applyCash: true });
+    const neg = await B(a2.id, 'KRW');
+    await S.undoTrade(r5.trade.id);
+    t('M1-5 잔액 100에서 300 매수 → −200, 되돌린 뒤 100(v1은 300)', neg === -200 && (await B(a2.id, 'KRW')) === 100, `${neg}`);
+    // M1-7
+    const fxr = await S.addCashTx({ type: 'fx', accountId: 'K', from: 'KRW', sent: 1372500, received: 1000, fxRate: 1372.5 });
+    t('M1-7 환전 → KRW −1,372,500 / USD +1,000 / 같은 pairId / fxRate 1,372.50', fxr.length === 2 && fxr[0].amount === -1372500 && fxr[1].amount === 1000 && fxr[1].currency === 'USD' && fxr[0].pairId === fxr[1].pairId && fxr[0].fxRate === 1372.5 && (await B('K', 'USD')) === 1000);
+    await S.updateCashTx(fxr[1].id, { accountId: 'K', from: 'KRW', sent: 1380000, received: 1000, fxRate: 1380, date: '2026-09-23' });
+    st = await S.loadAll();
+    const fx2 = st.cashTx.filter((r) => r.pairId === fxr[0].pairId);
+    t('M1 환전 수정 → 두 행 함께, id 유지', fx2.length === 2 && fx2.every((r) => r.fxRate === 1380 && r.date === '2026-09-23') && fx2.some((r) => r.id === fxr[0].id && r.amount === -1380000));
+    let blocked = false; try { await S.deleteCashTx(mig[0].id); } catch { blocked = true; }
+    t('M1 기초 잔액(migration)은 삭제 불가, 금액만 수정', blocked && (await S.updateCashTx(mig[0].id, { amount: 999999, date: '2000-01-01' }))[0].date === mig[0].date);
+    await S.updateCashTx(mig[0].id, { amount: 1000000 });
+    await S.deleteCashTx(fxr[0].id);
+    t('M1 환전 한쪽 삭제 → 쌍 전체 삭제', !(await S.loadAll()).cashTx.some((r) => r.pairId === fxr[0].pairId));
+    // M1-8
+    const cur8 = await B('K', 'KRW');
+    await S.addCashTx({ type: 'adjust', accountId: 'K', currency: 'KRW', amount: 1262340 - cur8 });
+    const r8 = await S.setCashTo('K', 'KRW', 1250000);
+    t('M1-8 앱 1,262,340 → 잔액 맞추기 1,250,000 → adjust −12,340', r8.amount === -12340 && (await B('K', 'KRW')) === 1250000, JSON.stringify(r8));
+    t('M1 잔액이 같으면 adjust를 쓰지 않음', (await S.setCashTo('K', 'KRW', 1250000)) === null);
+    let e0 = ''; try { S.buildCashTx({ type: 'deposit', accountId: 'K', currency: 'KRW', amount: 0 }); } catch (e) { e0 = e.message; }
+    t('M1 금액 0 저장 거부', e0 === '0보다 큰 금액을 입력해 주세요');
+    // 이체 + 계좌 삭제(M1-10)
+    const tr = await S.addCashTx({ type: 'transfer', fromId: 'K', toId: a2.id, currency: 'KRW', amount: 50000 });
+    t('M1 이체 → 보내는 쪽 −, 받는 쪽 +, 같은 pairId', tr[0].amount === -50000 && tr[1].amount === 50000 && tr[0].pairId === tr[1].pairId && (await B(a2.id, 'KRW')) === 50100);
+    await S.addCashTx({ type: 'interest', accountId: a2.id, currency: 'KRW', amount: 12 });
+    t('M1 이자 +12 (external=false)', (await B(a2.id, 'KRW')) === 50112 && (await S.loadAll()).cashTx.find((r) => r.type === 'interest').external === false);
+    await db.write(['dividends'], (tx) => tx.objectStore('dividends').put({ id: 'D1', accountId: a2.id, holdingKey: 'KR:x', payDate: '2026-09-01', net: 1, currency: 'KRW', createdAt: 'x' }));
+    await S.deleteAccount(a2.id);
+    st = await S.loadAll();
+    const other = st.cashTx.find((r) => r.pairId === tr[0].pairId);
+    t('M1-10 계좌 삭제 → 그 계좌 cashTx·dividends 0행, 이체 상대편 메모', !st.cashTx.some((r) => r.accountId === a2.id) && !st.dividends.length && other && other.memo.includes('상대 계좌 삭제됨'));
+    // M2-7: avgFx 되돌리기
+    const hf = await S.addHolding({ accountId: 'K', market: 'US', ticker: 'NVDA', category: 'STOCK', quantity: 40, avgPrice: 134, costCurrency: 'USD', avgFx: 1300 });
+    const rb = await S.recordTrade({ holding: hf, account: acc, side: 'BUY', quantity: 10, price: 200, fxRate: 1400, tradedAt: '2026-09-24', applyCash: false });
+    const mid = rb.holding.avgFx;
+    await S.undoTrade(rb.trade.id);
+    const hb = (await S.loadAll()).holdings.find((x) => x.id === hf.id);
+    t('M2-7 M2-3 직후 되돌리기 → 40주, $134, avgFx 1,300', near(mid, 1327.1739, 0.0001) && hb.quantity === 40 && hb.avgPrice === 134 && hb.avgFx === 1300 && rb.trade.avgFxBefore === 1300);
+    const rs = await S.recordTrade({ holding: hb, account: { buyFeePct: 0.25, sellFeePct: 0.25 }, side: 'SELL', quantity: 10, price: 250, fxRate: 1400, tradedAt: '2026-09-24', applyCash: true });
+    t('M2-5 매도 행에 realizedKrwAcq·realizedFxKrw 저장', near(rs.trade.realizedKrw, 1744895) && near(rs.trade.realizedKrwAcq, 1744895) && near(rs.trade.realizedFxKrw, 134335));
+    // 백업 v2 왕복
+    const bal0 = await B('K', 'KRW'), usd0 = await B('K', 'USD');
+    const ex = await S.exportData();
+    t('백업 v2: schemaVersion 2, cashTx·dividends 포함, preV2Backup·토큰 제외', ex.schemaVersion === 2 && Array.isArray(ex.data.cashTx) && Array.isArray(ex.data.dividends) && !ex.data.kv.some((r) => r.key === 'preV2Backup') && ex.data.kv.find((r) => r.key === 'settings').value.quote.token === '' && S.validateBackup(ex) === null);
+    await S.importData(JSON.parse(JSON.stringify(ex)));
+    t('백업 v2 왕복 → 잔액 동일, preV2Backup 유지', (await B('K', 'KRW')) === bal0 && (await B('K', 'USD')) === usd0 && !!(await db.kvGet('preV2Backup')));
+    t('validateBackup: v3 거부 / v2인데 cashTx 없으면 손상', !!S.validateBackup({ ...ex, schemaVersion: 3 }) && S.validateBackup({ ...ex, data: { ...ex.data, cashTx: undefined } }).includes('cashTx'));
+    // M1-9: v1 백업(현금 1,000,000 + 백업 이전 매수 cashApplied −300,000)
+    const v1 = { app: 'portfolio', schemaVersion: 1, exportedAt: '2026-09-20T10:00:00.000Z', data: {
+      accounts: [{ id: 'Q', name: '큐', order: 0, currencies: ['KRW'], baseCurrency: 'KRW', buyFeePct: 0, sellFeePct: 0, sellTaxPct: 0 }],
+      holdings: [{ id: 'QH', accountId: 'Q', market: 'KR', name: 'ETF', category: 'ETF', quantity: 10, avgPrice: 30000 }],
+      trades: [{ id: 'QT', holdingId: 'QH', accountId: 'Q', side: 'BUY', market: 'KR', name: 'ETF', tradedAt: '2026-09-19', quantity: 10, price: 30000, quantityBefore: 0, avgPriceBefore: 0, createdAt: '2026-09-19T00:00:00.000Z', cashApplied: { currency: 'KRW', amount: -300000 } }],
+      cash: [{ id: 'Q:KRW', accountId: 'Q', currency: 'KRW', amount: 1000000 }], kv: [], snapshots: [] } };
+    await S.importData(v1);
+    st = await S.loadAll();
+    t('M1-9 v1 백업 복원 → 잔액 1,000,000(이중 차감 없음), cashMigratedAt = exportedAt', (await B('Q', 'KRW')) === 1000000 && st.cashMigratedAt === v1.exportedAt && st.cashTx.length === 1 && st.cashTx[0].system === 'migration');
+    await S.undoTrade('QT');
+    t('M1-9 복원한 옛 거래 되돌리기 → 보정 adjust로 +300,000', (await B('Q', 'KRW')) === 1300000);
+    await S.wipe();
+    t('wipe 뒤 cashMigratedAt 없음 → 기원 시각', (await S.loadAll()).cashMigratedAt === EPOCH);
+  } catch (e) { t('저장소 테스트 예외', false, e.stack || e.message); }
+  await db.closeDB();
+  indexedDB.deleteDatabase(NAME);
+})();
+
 document.getElementById('sum').innerHTML = `<b class="${fail ? 'no' : 'ok'}">통과 ${pass} / 실패 ${fail}</b>`;
 document.title = fail ? `FAIL ${fail}` : `PASS ${pass}`;
 </script></body></html>

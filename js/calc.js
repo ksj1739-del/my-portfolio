@@ -45,25 +45,90 @@ export function valueHolding(h, account, price, fx) {
       retUsdPct = b ? (pnlUsd / b) * 100 : null;
     }
   }
-  return { pc, cc, price: p, hasPrice, mvNative, mvKrw, mvUsd, costNative, costKrw, base, pnlKrw, pnlUsd, retPct: retUsdPct ?? retPct };
+  // M2: 평균 매입환율(avgFx)이 있는 USD/USD 행만 환율 효과를 나눈다. 없으면 지금 경로 그대로(fxKnown=false)
+  const fxKnown = pc === 'USD' && cc === 'USD' && h.avgFx > 0;
+  let costKrwAcq = null, baseAcq = null, pnlKrwAcq = null, pnlFx = null, pnlPrice = null, retKrwPct = null;
+  if (fxKnown) {
+    costKrwAcq = costNative * h.avgFx;
+    baseAcq = costKrwAcq * (1 + fb);
+    if (mvKrw != null) {
+      pnlKrwAcq = mvKrw * (1 - fs) - baseAcq;
+      pnlFx = costNative * (1 + fb) * (fx - h.avgFx);
+      pnlPrice = pnlKrwAcq - pnlFx;
+      retKrwPct = baseAcq ? (pnlKrwAcq / baseAcq) * 100 : null;
+    }
+  }
+  return {
+    pc, cc, price: p, hasPrice, mvNative, mvKrw, mvUsd, costNative, costKrw, base, pnlKrw, pnlUsd, retPct: retUsdPct ?? retPct,
+    fxKnown, costKrwAcq, baseAcq, pnlKrwAcq, pnlFx, pnlPrice, retKrwPct,
+  };
 }
 
-// 이동평균법 매수
-export function applyBuy(h, q, price) {
+const usdUsd = (h) => priceCurrency(h) === 'USD' && costCurrency(h) === 'USD';
+
+// 이동평균법 매수. avgFx는 달러 매입금액 가중 이동평균(§3.2.3)
+// - 보유가 0이면 이번 환율로 새로 시작, avgFx가 없는 보유는 null 유지(부분 평균 금지), 환율을 비우면 null
+export function applyBuy(h, q, price, fxRate) {
   const nq = h.quantity + q;
-  return { quantity: nq, avgPrice: (h.quantity * h.avgPrice + q * price) / nq };
+  const out = { quantity: nq, avgPrice: (h.quantity * h.avgPrice + q * price) / nq, avgFx: h.avgFx ?? null };
+  if (!usdUsd(h)) return out;
+  const f = fxRate > 0 ? fxRate : null;
+  if (!(h.quantity > 1e-12)) out.avgFx = f;
+  else if (!(h.avgFx > 0) || !f) out.avgFx = null;
+  else {
+    const w0 = h.quantity * h.avgPrice, w1 = q * price;
+    out.avgFx = (w0 * h.avgFx + w1 * f) / (w0 + w1);
+  }
+  return out;
 }
 
-// 매도: 평단 유지, 실현손익 확정
+// 매도: 평단·avgFx 유지, 실현손익 확정. avgFx가 있으면 원가를 취득 환율로 잡는다(§3.2.5)
 export function applySell(h, account, q, sellPrice, fxSell) {
   const pc = priceCurrency(h), cc = costCurrency(h);
   const { fb, fs } = fees(account, h);
   const proceedsNative = q * sellPrice * (1 - fs);
   const realizedNative = pc === cc ? proceedsNative - q * h.avgPrice * (1 + fb) : null;
   const pK = pc === 'USD' ? (fxSell ? q * sellPrice * fxSell : null) : q * sellPrice;
-  const cK = cc === 'USD' ? (fxSell ? q * h.avgPrice * fxSell : null) : q * h.avgPrice;
+  const acq = usdUsd(h) && h.avgFx > 0;
+  const cK = cc === 'USD' ? (fxSell ? q * h.avgPrice * (acq ? h.avgFx : fxSell) : null) : q * h.avgPrice;
   const realizedKrw = pK == null || cK == null ? null : pK * (1 - fs) - cK * (1 + fb);
-  return { quantity: h.quantity - q, avgPrice: h.avgPrice, realizedNative, realizedKrw, proceedsNative, feePct: fs * 100 };
+  const realizedKrwAcq = acq && realizedKrw != null ? realizedKrw : null;
+  const realizedFxKrw = acq && fxSell ? q * h.avgPrice * (1 + fb) * (fxSell - h.avgFx) : null;
+  const left = h.quantity - q;
+  return {
+    quantity: left, avgPrice: h.avgPrice, avgFx: left > 1e-9 ? h.avgFx ?? null : null,
+    realizedNative, realizedKrw, realizedKrwAcq, realizedFxKrw, proceedsNative, feePct: fs * 100,
+  };
+}
+
+// 현금 잔액(파생, 저장하지 않음 §3.1.3). 반환은 옛 cash 저장소와 같은 모양
+export const EPOCH = '1970-01-01T00:00:00Z';
+const r8 = (v) => Math.round(v * 1e8) / 1e8;
+export function deriveCash({ accounts = [], cashTx = [], trades = [], dividends = [], migratedAt }) {
+  const since = migratedAt || EPOCH;
+  const m = new Map();
+  const add = (accountId, currency, amount) => {
+    if (!accountId || !currency) return;
+    const id = `${accountId}:${currency}`;
+    const r = m.get(id) || { id, accountId, currency, amount: 0 };
+    r.amount += Number(amount) || 0;
+    m.set(id, r);
+  };
+  for (const a of accounts) for (const c of a.currencies || ['KRW']) add(a.id, c, 0);
+  for (const t of cashTx) add(t.accountId, t.currency, t.amount);
+  for (const t of trades) if (t.cashApplied && (t.createdAt || '') > since) add(t.accountId, t.cashApplied.currency, t.cashApplied.amount);
+  for (const d of dividends) if (d.cashApplied) add(d.cashApplied.accountId || d.accountId, d.cashApplied.currency, d.cashApplied.amount);
+  return [...m.values()].map((r) => ({ ...r, amount: r8(r.amount) }));
+}
+
+// 매수 폼 환율 기본값(§3.2.3): ① 같은 계좌 최근 환전(30일 이내) ② 오늘이 아니면 그날 스냅샷 환율 ③ 현재 환율
+export function defaultTradeFx({ cashTx = [], snapshots = [], accountId, date, today, fxRate }) {
+  const d0 = new Date(date + 'T00:00:00').getTime();
+  const fx = cashTx.filter((t) => t.type === 'fx' && t.accountId === accountId && t.fxRate > 0 && t.date <= date && d0 - new Date(t.date + 'T00:00:00').getTime() <= 30 * 86400000)
+    .sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt))[0];
+  if (fx) return { rate: fx.fxRate, src: 'fx' };
+  if (date !== today) { const s = snapshots.find((x) => x.date === date && x.usdKrw > 0); if (s) return { rate: s.usdKrw, src: 'day' }; }
+  return fxRate ? { rate: fxRate, src: 'now' } : { rate: null, src: null };
 }
 
 // 전체 요약
@@ -71,9 +136,12 @@ export function summarize({ accounts, holdings, cash, priceOf, fx }) {
   const accById = Object.fromEntries(accounts.map((a) => [a.id, a]));
   const rows = holdings.map((h) => ({ h, acc: accById[h.accountId], v: valueHolding(h, accById[h.accountId], priceOf(h), fx) }));
   let holdingsKrw = 0, costKrw = 0, pnlKrw = 0, base = 0, fxMissing = false, noPrice = 0;
+  let pnlKrwBest = 0, baseBest = 0, fxKnownCount = 0, usdRowCount = 0;
   for (const r of rows) {
+    if (r.v.pc === 'USD' && r.v.cc === 'USD') { usdRowCount++; if (r.v.fxKnown) fxKnownCount++; }
     if (r.v.mvKrw == null) { fxMissing = true; continue; }
     holdingsKrw += r.v.mvKrw; costKrw += r.v.costKrw; pnlKrw += r.v.pnlKrw; base += r.v.base;
+    pnlKrwBest += r.v.pnlKrwAcq ?? r.v.pnlKrw; baseBest += r.v.baseAcq ?? r.v.base;
     if (!r.v.hasPrice) noPrice++;
   }
   let cashKrw = 0, cashKRW = 0, cashUSD = 0;
@@ -118,7 +186,7 @@ export function summarize({ accounts, holdings, cash, priceOf, fx }) {
     { id: 'USD', label: '달러 자산', value: usdAssets, pct: total ? (usdAssets / total) * 100 : null },
   ];
 
-  return { rows, total, holdingsKrw, costKrw, pnlKrw, ret: base ? (pnlKrw / base) * 100 : null, cashKrw, cashKRW, cashUSD, cats, byAccount, byCurrency, fxMissing, noPrice };
+  return { rows, total, holdingsKrw, costKrw, pnlKrw, ret: base ? (pnlKrw / base) * 100 : null, pnlKrwBest, retBest: baseBest ? (pnlKrwBest / baseBest) * 100 : null, fxKnownCount, usdRowCount, cashKrw, cashKRW, cashUSD, cats, byAccount, byCurrency, fxMissing, noPrice };
 }
 
 export function realizedSum(trades, { year, accountId } = {}) {

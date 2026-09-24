@@ -25,6 +25,14 @@ export function money(v, cur, opts) {
   return cur === 'USD' ? usd(v, opts) : won(v, opts);
 }
 
+// 금액을 숫자와 단위로 나눈다(가리기면 {amt: MASK}). pre=true면 단위가 앞($)
+export function split(v, cur, opts) {
+  const s = money(v, cur, opts);
+  const m = /^([+−]?)(\$?)([\d,.]+)(원?)$/.exec(s);
+  if (!m) return { sign: '', amt: s, unit: '', pre: false };
+  return { sign: m[1], amt: m[3], unit: m[2] || m[4], pre: !!m[2] };
+}
+
 // ₩1,250만 형태(보조 표기)
 export function man(v) {
   if (v == null || !isFinite(v)) return '–';
@@ -41,6 +49,9 @@ export function pct(v, d = 1, { sign = true } = {}) {
   const s = sign ? (v > 0 ? '+' : v < 0 ? '−' : '') : '';
   return `${s}${fmtDec(Math.abs(v), d)}%`;
 }
+
+// 손익 한 줄: "+1,234원 (+5.2%)"
+export const plLine = (v, cur, r, d = 1) => `${money(v, cur, { sign: true })}${r != null ? ` (${pct(r, d)})` : ''}`;
 
 export const arrow = (v) => (v > 0 ? '▲' : v < 0 ? '▼' : '');
 export const cls = (v) => (v > 0 ? 'up' : v < 0 ? 'dn' : 'm');

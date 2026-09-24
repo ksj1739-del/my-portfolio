@@ -1,0 +1,48 @@
+/* v2 M5(받은 배당) + M6(수익분석). 토큰은 app.css를 그대로 쓴다 */
+
+/* 막대 차트: 폭 60%, 윗모서리 4, 선택 --accent, 나머지 --bar-idle, 음수는 기준선 아래 --down */
+.bc{width:100%}
+.bc-plot{position:relative;display:grid;grid-template-columns:repeat(12,1fr);touch-action:pan-y}
+.bc-zero{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--line);pointer-events:none}
+.bc-col{position:relative;background:none;border:0;padding:0;margin:0;cursor:pointer;height:100%;border-radius:var(--r-sm)}
+.bc-col:disabled{cursor:default}
+.bc-col:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.bc-bar{position:absolute;left:20%;width:60%;border-radius:4px 4px 0 0;background:var(--bar-idle);transition:background var(--dur-fast)}
+.bc-bar.neg{border-radius:0 0 4px 4px;background:var(--down)}
+.bc.select .bc-col.on .bc-bar{background:var(--accent)}
+.bc.select .bc-col.on .bc-bar.neg{background:var(--down)}
+.bc.pl .bc-bar{background:var(--up)}
+.bc.pl .bc-bar.neg{background:var(--down)}
+.bc .bc-col .bc-bar.bc-void{background:none;border:1px dashed var(--line);border-bottom:0;box-sizing:border-box;opacity:.8}
+.bc-x{display:grid;grid-template-columns:repeat(12,1fr);margin-top:6px;font-size:var(--fs-sub12);color:var(--t4);text-align:center;font-variant-numeric:tabular-nums}
+.bc-x span.on{color:var(--t1);font-weight:700}
+
+/* 배당·수익분석 머리 */
+.m56-top{display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:32px}
+.m56-sub{font-size:var(--fs-t7);line-height:var(--lh-t7);color:var(--t3)}
+.m56-chart{margin-top:var(--sp-16)}
+.m56-mhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:700;font-size:var(--fs-t6);padding-top:4px}
+.m56-mhead .num{font-variant-numeric:tabular-nums}
+
+/* 수익분석: ‹ 2026년 9월 › + 월|연 */
+.m56-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;touch-action:pan-y}
+.m56-nav .mon{display:flex;align-items:center;gap:2px}
+.m56-nav .mon b{font-size:var(--fs-t5);font-weight:700;min-width:104px;text-align:center;font-variant-numeric:tabular-nums}
+.m56-nav .icon-btn:disabled{opacity:.3}
+.m56-lines .row{min-height:32px;align-items:center}
+.m56-lines .row .m{color:var(--t2)}
+.m56-ctl{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.m56-ctl .chips{flex-wrap:nowrap}
+.m56-cap{margin:0;padding:var(--sp-12) var(--gutter) var(--sp-20)}
+.m56-acc summary{list-style:none;display:flex;justify-content:space-between;align-items:center;min-height:44px;cursor:pointer;font-weight:700;font-size:var(--fs-t5)}
+.m56-acc summary::-webkit-details-marker{display:none}
+.m56-acc summary .chev{transition:transform var(--dur-base) var(--ease-out)}
+.m56-acc[open] summary .chev{transform:rotate(180deg)}
+
+/* 배당 기록 시트 */
+.m56-sum{background:var(--fill);border-radius:var(--r-md);padding:12px 14px;display:flex;flex-direction:column;gap:4px}
+.m56-sum .big{font-size:var(--fs-t4);font-weight:700;font-variant-numeric:tabular-nums}
+.m56-warn{color:var(--up)}
+.m56-pick{display:flex;flex-direction:column}
+
+@media (prefers-reduced-motion: reduce){.bc-bar,.m56-acc summary .chev{transition:none}}

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko" data-theme="light"><head><meta charset="utf-8"><title>M4 기간 수익률 테스트</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@18.3.1",
+  "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?external=react",
+  "htm": "https://esm.sh/htm@3.1.1"
+} }
+</script>
+<link rel="stylesheet" href="./css/app.css">
+<link rel="stylesheet" href="./css/m4.css">
+<style>body{font:14px system-ui;padding:16px;background:var(--bg);color:var(--t1)}.ok{color:#0a7}.no{color:#d22;font-weight:700}.demo{background:var(--card);padding:16px;max-width:420px;border-radius:12px;margin:12px 0}.demo h3{margin:0 0 8px;font-size:14px}</style></head>
+<body><h1>M4 자산 추이 · 기간 수익률 테스트 (설계서 §3.4.7)</h1><ul id="out"></ul><p id="sum"></p>
+<h2>차트 확인용(가짜 스냅샷, 앱 DB에는 쓰지 않음)</h2>
+<div class="demo"><h3>40일 · 5일 빈 구간 · 흐린 점 2개(상승)</h3><div id="c1"></div><p id="c1s" class="sm">눌러서 끌면 날짜가 나와요</p></div>
+<div class="demo"><h3>하락 · 가리기 켬(날짜 레이블 없음)</h3><div id="c2"></div></div>
+<div class="demo"><h3>스파크라인 56×24</h3><span id="s1"></span> <span id="s2"></span> <span id="s3"></span></div>
+<script type="module">
+import { netExternalCum, netExternalCumUsd, buildSnapshot, mergeLive, pickBase, periodReturn, periodView, targetDate, mdLabel } from './js/period.js';
+import { layout, trend } from './js/charts.js';
+import { money, pct, setHidden } from './js/format.js';
+const out = document.getElementById('out'); let pass = 0, fail = 0;
+const near = (a, b, tol = 0.01) => a != null && Math.abs(a - b) <= tol;
+function t(name, cond, detail = '') { const li = document.createElement('li'); li.className = cond ? 'ok' : 'no'; li.textContent = `${cond ? '✔' : '✘'} ${name} ${cond ? '' : detail}`; out.appendChild(li); cond ? pass++ : fail++; }
+const snap = (date, V, N, extra = {}) => ({ date, totalAssetKrw: V, v: 2, netExternalCum: N, netExternalCumUsd: null, ...extra });
+
+// M4-1 ~ M4-3 계산식
+let r = periodReturn(snap('2026-08-24', 10000000, 0), snap('2026-09-24', 12000000, 1000000));
+t('M4-1 손익 1,000,000 / 9.0909%', r.ok && near(r.pnl, 1000000) && near(r.ret, 9.0909, 1e-4), JSON.stringify(r));
+r = periodReturn(snap('2026-08-24', 10000000, 1000000), snap('2026-09-24', 9500000, 0));
+t('M4-2 100만 출금: 손익 500,000 / 5.0000%', r.ok && near(r.pnl, 500000) && near(r.ret, 5, 1e-4), JSON.stringify(r));
+r = periodReturn({ date: '2026-08-24', v: 2, totalAssetKrw: 1, netExternalCum: 0, totalUsd: 7000, netExternalCumUsd: 0 }, { date: '2026-09-24', v: 2, totalAssetKrw: 1, netExternalCum: 0, totalUsd: 7300, netExternalCumUsd: 100 }, 'USD');
+t('M4-3 달러: 손익 $200.00 / 2.8169%', r.ok && near(r.pnl, 200) && near(r.ret, 2.8169, 1e-4), JSON.stringify(r));
+r = periodReturn({ date: '2026-08-24', v: 2, totalAssetKrw: 1, netExternalCum: 0, totalUsd: 7000, netExternalCumUsd: null }, { date: '2026-09-24', v: 2, totalAssetKrw: 1, netExternalCum: 0, totalUsd: 7300, netExternalCumUsd: 100 }, 'USD');
+t('달러 누계 null → 계산 불가(nofx)', !r.ok && r.reason === 'nofx');
+r = periodReturn(snap('2026-08-24', 0, 1000000), snap('2026-09-24', 50000, 0));
+t('분모 ≤ 0(시작 자산 0, 전액 출금 뒤) → 수익률 null, 손익만', r.ok && r.ret === null && near(r.pnl, 1050000), JSON.stringify(r));
+
+// M4-4 기준 스냅샷 고르기
+const TODAY = '2026-09-24';
+const snaps = [snap('2026-08-15', 9000000, 0), snap('2026-08-20', 10000000, 0), snap('2026-08-25', 10100000, 0), snap('2026-09-23', 11000000, 0), snap(TODAY, 12000000, 1000000)];
+t('1달 목표일 = 8월 24일', targetDate('1m', TODAY) === '2026-08-24');
+let S = pickBase(snaps, '1m', TODAY);
+let v = periodView(snaps, '1m', TODAY);
+t('M4-4 8/24 없음 → 8/20 사용, 헤더 "8월 20일 대비"', S.date === '2026-08-20' && mdLabel(S.date) === '8월 20일' && near(v.r.pnl, 1000000), S && S.date);
+t('기준일 이후 점만 차트에(8/20~9/24, 4개)', v.series.length === 4 && v.series[0].date === '2026-08-20');
+t('오늘 칩 = 어제 이전 가장 가까운 스냅샷(9/23)', pickBase(snaps, '1d', TODAY).date === '2026-09-23');
+t('전체 = netExternalCum 있는 첫 스냅샷', pickBase([{ date: '2026-08-01', totalAssetKrw: 1 }, ...snaps], 'all', TODAY).date === '2026-08-15');
+t('1년: 목표일 이전 스냅샷 없음 → 데이터 없음', periodView(snaps, '1y', TODAY).r.reason === 'nodata');
+t('3달 목표일 6/24, 1주 9/17', targetDate('3m', TODAY) === '2026-06-24' && targetDate('1w', TODAY) === '2026-09-17');
+
+// M4-5 v1 기준 스냅샷
+const v1 = [{ date: '2026-08-20', totalAssetKrw: 10000000, totalCostKrw: 1, cashKrw: 1, usdKrw: 1400, byCategory: {} }, snap(TODAY, 12000000, 0)];
+v = periodView(v1, '1m', TODAY);
+t('M4-5 기준이 v1 → 데이터 없음, 기록 시작일 9월 24일', !v.r.ok && v.r.reason === 'nodata' && mdLabel(v.since) === '9월 24일', JSON.stringify(v.r));
+t('M4-5 v1이라도 차트 점은 그린다(보간·앞당김 없음)', v.series.length === 2 && v.S.date === '2026-08-20');
+t('첫날(스냅샷이 오늘 하나) 전체 칩 → 데이터 없음(0% 아님)', !periodView([snap(TODAY, 1, 0)], 'all', TODAY).r.ok);
+
+// M4-6 백데이트 입금
+const tx = [];
+const s91 = { date: '2026-09-01', totalAssetKrw: 10000000, v: 2, netExternalCum: netExternalCum(tx, '2026-09-01') };
+const s910 = { date: '2026-09-10', totalAssetKrw: 10200000, v: 2, netExternalCum: netExternalCum(tx, '2026-09-10') };
+tx.push({ id: 'd', date: '2026-09-05', type: 'deposit', external: true, currency: 'KRW', amount: 1000000, krwValue: 1000000, usdValue: null });
+const s915 = { date: '2026-09-15', totalAssetKrw: 11300000, v: 2, netExternalCum: netExternalCum(tx, '2026-09-15') };
+const a = periodReturn(s91, s910), b = periodReturn(s910, s915);
+t('M4-6 9/1~9/10 손익 불변(200,000)', near(a.pnl, 200000) && s910.netExternalCum === 0);
+t('M4-6 9/10~9/15 구간에서 1,000,000 차감 → 손익 100,000', s915.netExternalCum === 1000000 && near(b.pnl, 100000) && near(b.dN, 1000000), JSON.stringify(b));
+
+// 순유입 누계
+const ctx = [
+  { date: '2026-09-01', external: true, amount: 1000000, currency: 'KRW', krwValue: 1000000, usdValue: 1000000 / 1400 },
+  { date: '2026-09-02', external: true, amount: -100, currency: 'USD', krwValue: -140000, usdValue: -100 },
+  { date: '2026-09-03', external: false, type: 'interest', amount: 500, currency: 'KRW' },
+  { date: '2026-09-03', external: false, type: 'adjust', amount: 99999, currency: 'KRW' },
+  { date: '2026-09-30', external: true, amount: 5, currency: 'KRW', krwValue: 5, usdValue: null },
+];
+t('netExternalCum: external 행만, 날짜 ≤ 기준일', netExternalCum(ctx, '2026-09-24') === 860000 && netExternalCum(ctx, '2026-09-01') === 1000000);
+t('netExternalCumUsd: 합산 / 달러값 없는 행이 있으면 null', near(netExternalCumUsd(ctx, '2026-09-24'), 1000000 / 1400 - 100, 1e-6) && netExternalCumUsd(ctx, '2026-09-30') === null);
+t('초기 보유 externalKrw(v2 이후)도 유입', netExternalCum([], '2026-09-24', [{ initial: true, tradedAt: '2026-09-10', externalKrw: 700000 }, { initial: true, tradedAt: '2026-09-10' }]) === 700000);
+
+// 스냅샷 v2 모양
+const sum = { total: 14000000, costKrw: 9000000, cashKrw: 1000000, cats: [{ id: 'ETF', value: 13000000 }], byAccount: [{ acc: { id: 'k' }, totalKrw: 14000000 }], noPrice: 1, fxMissing: false };
+const bs = buildSnapshot({ date: TODAY, sum, fxRate: 1400, cashTx: ctx, trades: [] });
+t('buildSnapshot: 기존 필드 유지 + v2 필드', bs.totalAssetKrw === 14000000 && bs.usdKrw === 1400 && bs.byCategory.ETF === 13000000 && bs.v === 2 && bs.totalUsd === 10000 && bs.netExternalCum === 860000 && bs.byAccount.k === 14000000 && bs.noPrice === 1 && bs.fxMissing === false);
+t('buildSnapshot: 환율 없으면 totalUsd null', buildSnapshot({ date: TODAY, sum, fxRate: null, cashTx: [] }).totalUsd === null);
+t('mergeLive: 같은 날짜는 지금 값으로, 날짜순', (() => { const m = mergeLive([snap(TODAY, 1, 0), snap('2026-09-01', 2, 0)], snap(TODAY, 3, 0)); return m.length === 2 && m[0].date === '2026-09-01' && m[1].totalAssetKrw === 3; })());
+
+// USD 모드
+const us = [{ date: '2026-08-20', v: 2, totalAssetKrw: 1, netExternalCum: 0, totalUsd: null, usdKrw: null, netExternalCumUsd: 0 }, { date: TODAY, v: 2, totalAssetKrw: 2, netExternalCum: 0, totalUsd: 10, netExternalCumUsd: 0 }];
+v = periodView(us, '1m', TODAY, 'USD');
+t('USD 모드: 기준일 환율 없음 → 계산 불가, 원화는 계산됨', v.r.reason === 'nofx' && periodView(us, '1m', TODAY, 'KRW').r.ok);
+
+// 차트 배치: 빈 날 끊김·흐린 점·색
+const pts = [];
+for (let i = 0; i < 40; i++) {
+  if (i >= 15 && i < 20) continue; // 5일 빈 구간
+  const d = new Date(2026, 7, 16 + i);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  pts.push({ date, value: 30000000 + i * 90000 + Math.sin(i / 2) * 400000, dim: i === 8 || i === 30 });
+}
+const L = layout(pts, 360, 160);
+t('빈 날(5일) → 선 2조각으로 끊김, 보간 없음', L.segs.length === 2 && L.segs[0].length === 15 && L.segs[1].length === 20);
+t('흐린 점 2개', L.dots.length === 2);
+t('시작보다 오르면 up, 내리면 dn', trend(pts) === 'up' && trend([...pts].reverse().map((p, i) => ({ ...p, date: pts[i].date }))) === 'dn');
+t('값 null(환율 없는 날 달러 모드)도 끊김', layout([{ date: '2026-09-01', value: 1 }, { date: '2026-09-02', value: null }, { date: '2026-09-03', value: 2 }], 100, 50).segs.length === 2);
+
+// M4-7 가리기: 금액 문자열에 숫자가 없어야 함, %는 그대로
+setHidden(true);
+const hid = `${money(1000000, 'KRW', { sign: true })} (${pct(9.0909, 2)})`;
+t('M4-7 가리기 → 금액 •••••, %만 보임', !/\d/.test(money(1234567, 'KRW')) && !/\d/.test(money(12.5, 'USD')) && hid.includes('+9.09%'), hid);
+setHidden(false);
+
+document.getElementById('sum').innerHTML = `<b class="${fail ? 'no' : 'ok'}">통과 ${pass} / 실패 ${fail}</b>`;
+document.title = fail ? `FAIL ${fail}` : `PASS ${pass}`;
+
+// ---- 눈으로 확인: 합성 스냅샷으로 LineChart·Spark 렌더 ----
+const { html, createRoot, useState } = await import('./js/react.js');
+const { LineChart, Spark } = await import('./js/charts.js');
+function Demo({ points, hide }) {
+  const [i, setI] = useState(null);
+  const m = (v) => (hide ? '•••••원' : money(v, 'KRW'));
+  const p = i == null ? null : points[i];
+  return html`<div>
+    <div class="pl">${p ? `${mdLabel(p.date)} · ${m(p.value)}` : m(points[points.length - 1].value)}</div>
+    <div style=${{ marginTop: '28px' }}><${LineChart} points=${points} label="합성 데이터 차트" onScrub=${setI} showDates=${!hide} /></div></div>`;
+}
+createRoot(document.getElementById('c1')).render(html`<${Demo} points=${pts} />`);
+const down = pts.map((p, k) => ({ ...p, value: pts[pts.length - 1 - k].value }));
+createRoot(document.getElementById('c2')).render(html`<${Demo} points=${down} hide />`);
+createRoot(document.getElementById('s1')).render(html`<${Spark} points=${pts.slice(-30)} label="상승" />`);
+createRoot(document.getElementById('s2')).render(html`<${Spark} points=${down.slice(-30)} label="하락" />`);
+createRoot(document.getElementById('s3')).render(html`<${Spark} points=${pts.slice(-1)} label="한 점" />`);
+</script></body></html>
